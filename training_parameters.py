@@ -39,5 +39,4 @@ METRIC_PARAMS = {
     'iou_threshold': 0.2,  # 20% overlap = True Positive
     'min_duration_sec': 0.3,  # Min duration for a prediction to be valid
     'max_duration_sec': 3.0  # Max duration for a prediction to be valid
-    # --------------------------
 }

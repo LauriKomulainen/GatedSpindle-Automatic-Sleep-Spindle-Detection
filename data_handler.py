@@ -5,8 +5,6 @@ from pathlib import Path
 import numpy as np
 import time
 import shutil
-
-# Tuo uudet moduulit oikeista paikoista
 from utils.logger import setup_logging
 from training_parameters import DATA_PARAMS
 from data_preprocess import handler, bandpassfilter, normalization, cwt_transform
@@ -15,7 +13,6 @@ from utils import diagnostics
 setup_logging("data_handler.log")
 log = logging.getLogger(__name__)
 
-# Ladataan parametrit
 DATA_DIRECTORY = Path(__file__).parent / 'Raw DREAMS'
 LOWCUT = DATA_PARAMS['lowcut']
 HIGHCUT = DATA_PARAMS['highcut']
@@ -51,7 +48,7 @@ def segment_data(raw, window_sec: float, overlap_sec: float):
 
 
 def main():
-    log.info("--- 🧠 Starting DREAMS data preprocessing ---")
+    log.info("---Starting DREAMS data preprocessing ---")
     start_time = time.time()
 
     diag_dir = Path("./diagnostics_plots")
@@ -79,7 +76,7 @@ def main():
 
     for patient_file_group in patient_list:
         patient_id = patient_file_group['id']
-        log.info(f"\n--- ⚙️ Processing patient: {patient_id} ---")
+        log.info(f"\n---Processing patient: {patient_id} ---")
         raw = handler.load_dreams_patient_data(patient_file_group)
         if not raw:
             log.warning(f"Failed to load patient {patient_id}. Skipping.")
@@ -98,24 +95,24 @@ def main():
         log.info("Signal normalized (Z-score).")
         raw._data[0] = normalized_signal
 
-        X_windows, Y_masks = segment_data(raw, window_sec=WINDOW_SEC, overlap_sec=OVERLAP_SEC)
-        log.info(f"Segmented to 1D data. X shape: {X_windows.shape}, Y shape: {Y_masks.shape}")
+        x_windows, y_masks = segment_data(raw, window_sec=WINDOW_SEC, overlap_sec=OVERLAP_SEC)
+        log.info(f"Segmented to 1D data. X shape: {x_windows.shape}, Y shape: {y_masks.shape}")
 
-        X_images, Y_images = cwt_transform.transform_windows_to_images(
-            X_windows, Y_masks, fs
+        x_images, y_images = cwt_transform.transform_windows_to_images(
+            x_windows, y_masks, fs
         )
-        log.info(f"Converted to 2D images. X_images shape: {X_images.shape}, Y_images shape: {Y_images.shape}")
+        log.info(f"Converted to 2D images. X_images shape: {x_images.shape}, Y_images shape: {y_images.shape}")
 
         try:
-            first_spindle_idx = np.where(np.sum(Y_masks, axis=1) > 0)[0][0]
+            first_spindle_idx = np.where(np.sum(y_masks, axis=1) > 0)[0][0]
             if first_spindle_idx >= 0:
                 log.info(f"Found first spindle in window {first_spindle_idx}. Saving diagnostic plot.")
                 plot_save_path = examples_dir / f"{patient_id}_spindle_example_idx{first_spindle_idx}.png"
                 diagnostics.save_diagnostic_plot(
-                    signal_1d=X_windows[first_spindle_idx],
-                    mask_1d=Y_masks[first_spindle_idx],
-                    image_2d=X_images[first_spindle_idx],
-                    mask_2d=Y_images[first_spindle_idx],
+                    signal_1d=x_windows[first_spindle_idx],
+                    mask_1d=y_masks[first_spindle_idx],
+                    image_2d=x_images[first_spindle_idx],
+                    mask_2d=y_images[first_spindle_idx],
                     fs=fs,
                     save_path=plot_save_path
                 )
@@ -124,12 +121,12 @@ def main():
         except Exception as e:
             log.error(f"Failed to save diagnostic plot: {e}")
 
-        X_path = output_dir / f"{patient_id}_X_images.npy"
-        Y_path = output_dir / f"{patient_id}_Y_images.npy"
-        X_1D_path = output_dir / f"{patient_id}_X_1D.npy"
-        np.save(X_path, X_images)
-        np.save(Y_path, Y_images)
-        np.save(X_1D_path, X_windows)
+        x_path = output_dir / f"{patient_id}_X_images.npy"
+        y_path = output_dir / f"{patient_id}_Y_images.npy"
+        x_1d_path = output_dir / f"{patient_id}_X_1D.npy"
+        np.save(x_path, x_images)
+        np.save(y_path, y_images)
+        np.save(x_1d_path, x_windows)
         log.info(f"Saved final 2D images and 1D signals to {output_dir}")
 
     end_time = time.time()

@@ -8,7 +8,7 @@ class AttentionGate(nn.Module):
     Tämä on Additive Attention Gate (AG) PyTorch-toteutus.
     """
 
-    def __init__(self, F_g, F_l, F_int):
+    def __init__(self, f_g, f_l, f_int):
         """
         Parametrit:
         F_g: Kanavat gating signalista (ylössamplattu polku, esim. 512)
@@ -19,19 +19,19 @@ class AttentionGate(nn.Module):
 
         # Wg: 1x1 Conv gating signalille (g)
         self.Wg = nn.Sequential(
-            nn.Conv2d(F_g, F_int, kernel_size=1, stride=1, padding=0),
-            nn.BatchNorm2d(F_int)
+            nn.Conv2d(f_g, f_int, kernel_size=1, stride=1, padding=0),
+            nn.BatchNorm2d(f_int)
         )
 
         # Wx: 1x1 Conv skip connectionille (x)
         self.Wx = nn.Sequential(
-            nn.Conv2d(F_l, F_int, kernel_size=1, stride=1, padding=0),
-            nn.BatchNorm2d(F_int)
+            nn.Conv2d(f_l, f_int, kernel_size=1, stride=1, padding=0),
+            nn.BatchNorm2d(f_int)
         )
 
         # Huomio-painot (a): Yhdistetty ulostulo -> 1 kanava -> Sigmoid [0, 1]
         self.psi = nn.Sequential(
-            nn.Conv2d(F_int, 1, kernel_size=1, stride=1, padding=0),
+            nn.Conv2d(f_int, 1, kernel_size=1, stride=1, padding=0),
             nn.BatchNorm2d(1),
             nn.Sigmoid()
         )

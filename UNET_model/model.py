@@ -6,9 +6,12 @@ import torch.nn as nn
 import torch.optim as optim
 import logging
 from tqdm import tqdm
+
 from utils.diagnostics import save_prediction_plot
 from .attention_gates import AttentionGate
+
 log = logging.getLogger(__name__)
+
 
 class UNet(nn.Module):
     def __init__(self, dropout_rate):
@@ -39,30 +42,26 @@ class UNet(nn.Module):
         self.pool4 = nn.MaxPool2d(kernel_size=2, stride=2)
         self.conv5 = conv_block(512, 1024)
 
-        # F_g=512 (up_conv ulostulo), F_l=512 (c4), F_int=256
-        self.ag6 = AttentionGate(F_g=512, F_l=512, F_int=256)
+        # Korjatut kanavamäärät
+        self.ag6 = AttentionGate(f_g=512, f_l=512, f_int=256)
         self.up6 = up_conv(1024, 512)
-        self.conv6 = conv_block(1024, 512)
+        self.conv6 = conv_block(1024, 512)  # 512 (up) + 512 (skip)
 
-        # F_g=256, F_l=256, F_int=128
-        self.ag7 = AttentionGate(F_g=256, F_l=256, F_int=128)
+        self.ag7 = AttentionGate(f_g=256, f_l=256, f_int=128)
         self.up7 = up_conv(512, 256)
-        self.conv7 = conv_block(512, 256)
+        self.conv7 = conv_block(512, 256)  # 256 (up) + 256 (skip)
 
-        # F_g=128, F_l=128, F_int=64
-        self.ag8 = AttentionGate(F_g=128, F_l=128, F_int=64)
+        self.ag8 = AttentionGate(f_g=128, f_l=128, f_int=64)
         self.up8 = up_conv(256, 128)
-        self.conv8 = conv_block(256, 128)
+        self.conv8 = conv_block(256, 128)  # 128 (up) + 128 (skip)
 
-        # F_g=64, F_l=64, F_int=32
-        self.ag9 = AttentionGate(F_g=64, F_l=64, F_int=32)
+        self.ag9 = AttentionGate(f_g=64, f_l=64, f_int=32)
         self.up9 = up_conv(128, 64)
-        self.conv9 = conv_block(128, 64)
+        self.conv9 = conv_block(128, 64)  # 64 (up) + 64 (skip)
 
         self.conv10 = nn.Conv2d(64, 1, kernel_size=1)
 
     def forward(self, x):
-        # Encoder
         c1 = self.conv1(x);
         p1 = self.pool1(c1)
         c2 = self.conv2(p1);
@@ -71,9 +70,8 @@ class UNet(nn.Module):
         p3 = self.pool3(c3)
         c4 = self.conv4(p3);
         p4 = self.pool4(c4)
-        c5 = self.conv5(p4)  # Bottleneck
+        c5 = self.conv5(p4)
 
-        # Decoder
         up_6 = self.up6(c5)
         c4_cropped = c4[:, :, :up_6.shape[2], :up_6.shape[3]]
         attn_c4 = self.ag6(c4_cropped, up_6)
@@ -100,6 +98,7 @@ class UNet(nn.Module):
 
         return self.conv10(c9)
 
+
 def train_model(model, train_loader, val_loader,
                 optimizer_type, learning_rate, num_epochs,
                 early_stopping_patience,
@@ -112,6 +111,7 @@ def train_model(model, train_loader, val_loader,
     log.info(f"Using device: {device}")
     model.to(device)
 
+    # Pikselipohjainen DiceLoss koulutusta varten (OK)
     class DiceLoss(nn.Module):
         def __init__(self, smooth=1.):
             super(DiceLoss, self).__init__()

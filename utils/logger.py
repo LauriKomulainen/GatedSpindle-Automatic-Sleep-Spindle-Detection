@@ -7,7 +7,7 @@ import os
 LOG_DIR = "logs"
 LOG_FORMAT = '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 
-def setup_logging(log_file_name: str): # <-- LISÄTTY PARAMETRI
+def setup_logging(log_file_name: str):
     """
     Configures logging for the entire project.
     Creates the 'logs' directory if it doesn't exist.
