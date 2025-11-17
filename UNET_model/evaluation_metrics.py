@@ -7,6 +7,7 @@ from scipy.ndimage import label
 from tqdm import tqdm
 from typing import List, Dict, Tuple
 from training_parameters import CWT_PARAMS, METRIC_PARAMS, DATA_PARAMS
+import torch.nn.functional as F
 
 log = logging.getLogger(__name__)
 
@@ -59,57 +60,73 @@ def _calculate_iou(event1: Tuple[int, int], event2: Tuple[int, int]) -> float:
 
 def _stitch_predictions(all_preds: torch.Tensor, step_samples: int) -> torch.Tensor:
     """
-    Ompelee (stitches) limittäiset ikkuna-ennusteet yhteen pitkäksi signaaliksi.
-    Ottaa ensimmäiset 'step_samples' (esim. 250 näytettä) kustakin ikkunasta,
-    ja liittää viimeisen ikkunan kokonaisuudessaan perään.
+    Ompelee (stitches) limittäiset ikkuna-ennusteet yhteen käyttämällä
+    painotettua keskiarvoa (Hann-ikkuna) saumojen poistamiseksi.
     """
     num_windows, _, height, window_len = all_preds.shape
 
-    # Otetaan ensimmäiset 'step_samples' (esim. 2.5s) kaikista paitsi viimeisestä ikkunasta
-    # Käytetään [i:i+1] viipalointia, jotta tensorin dimensiot säilyvät
-    stitched_preds_list = [all_preds[i:i + 1, :, :, :step_samples] for i in range(num_windows - 1)]
+    all_preds = all_preds.cpu().float()
 
-    # Lisätään viimeinen, kokonainen ikkuna (esim. 496 näytettä)
-    stitched_preds_list.append(all_preds[-1:, :, :, :])
+    final_len = (num_windows - 1) * step_samples + window_len
 
-    # Yhdistetään kaikki osat leveys-suunnassa (dim=3)
-    # Lopputulos: [1, 1, 64, (717 * 250) + 496]
-    return torch.cat(stitched_preds_list, dim=3)
+    stitched_sum = torch.zeros((1, 1, height, final_len), dtype=torch.float32)
+    stitched_weights = torch.zeros((1, 1, height, final_len), dtype=torch.float32)
+
+    window_weights_1d = torch.hann_window(window_len, periodic=False)
+
+    window_weights = window_weights_1d.view(1, 1, 1, window_len)
+
+    log.debug(f"Stitching {num_windows} windows. Final length: {final_len} samples.")
+
+    for i in range(num_windows):
+        start = i * step_samples
+        end = start + window_len
+
+        stitched_sum[:, :, :, start:end] += all_preds[i:i + 1] * window_weights
+
+        stitched_weights[:, :, :, start:end] += window_weights
+
+    stitched_weights[stitched_weights == 0] = 1e-6
+
+    stitched_pred = stitched_sum / stitched_weights
+
+    return stitched_pred
 
 
-# --- LISÄYS LOPPUU ---
+# --- PÄÄFUNKTIO (KORJATTU) ---
 
-
-# --- PÄÄFUNKTIO ---
-
-def compute_event_based_metrics(model, data_loader) -> Dict[str, float]:
+def compute_event_based_metrics(model, data_loader, threshold: float = 0.5) -> Dict[str, float]:
     """
-    Laskee segmentoinnin metriikat TAPAHTUMAPOHJAISESTI (Event-based)
-    kokoamalla (stitching) ensin koko potilaan ennusteen.
+    Laskee segmentoinnin metriikat TAPAHTUMAPOHJAISESTI.
+    Ottaa nyt vastaan kynnysarvon (threshold).
     """
     device = torch.device('mps' if torch.backends.mps.is_available() else 'cpu')
     if torch.cuda.is_available():
         device = torch.device('cuda')
     model.to(device)
-    model.eval()
+    model.eval()  # Asettaa mallin eval-tilaan (tärkeää augmentaation poistamiseksi)
 
     total_tp, total_fp, total_fn = 0, 0, 0
     iou_scores_of_tps = []
 
     iou_threshold = METRIC_PARAMS['iou_threshold']
     fs = DATA_PARAMS['fs']
-    step_samples = int((DATA_PARAMS['window_sec'] - DATA_PARAMS['overlap_sec']) * fs)  # 250 näytettä
+    step_samples = int((DATA_PARAMS['window_sec'] - DATA_PARAMS['overlap_sec']) * fs)
 
-    log.info(f"Stitching predictions and calculating EVENT-BASED metrics (IoU threshold: {iou_threshold})...")
+    log.info(
+        f"Stitching predictions and calculating EVENT-BASED metrics (IoU threshold: {iou_threshold}, Decision threshold: {threshold:.2f})...")
 
     all_preds_list = []
     all_masks_list = []
     with torch.no_grad():
-        for images_2d, masks_2d, _ in tqdm(data_loader, desc="1/3: Running Inference"):
-            images_2d = images_2d.to(device)
-            outputs_2d = model(images_2d)
-            outputs_2d = torch.sigmoid(outputs_2d)
-            preds_2d = (outputs_2d > 0.5).float()
+        # --- KORJAUS 1: Purkaa 3 arvoa (ignoraa 1D-signaalin) ---
+        for images_seq, masks_2d, _ in tqdm(data_loader, desc="1/3: Running Inference"):
+            images_seq = images_seq.to(device)
+
+            seg_logits = model(images_seq)
+            outputs_2d = torch.sigmoid(seg_logits)
+
+            preds_2d = (outputs_2d > threshold).float()
 
             all_preds_list.append(preds_2d.cpu())
             all_masks_list.append(masks_2d.cpu())
@@ -120,10 +137,10 @@ def compute_event_based_metrics(model, data_loader) -> Dict[str, float]:
     log.info("2/3: Stitching predictions into continuous signal...")
 
     h_out, w_out = all_preds_tensor.shape[2], all_preds_tensor.shape[3]
-    all_masks_tensor = all_masks_tensor[:, :, :h_out, :w_out]
+    all_masks_tensor_resized = F.interpolate(all_masks_tensor, size=(h_out, w_out), mode='nearest')
 
     stitched_pred_2d = _stitch_predictions(all_preds_tensor, step_samples)
-    stitched_mask_2d = _stitch_predictions(all_masks_tensor, step_samples)
+    stitched_mask_2d = _stitch_predictions(all_masks_tensor_resized, step_samples)
 
     log.info("Converting 2D stitched images to 1D time series...")
     mask_1d_true = _internal_convert_2d_mask_to_1d(stitched_mask_2d.squeeze().numpy())
@@ -134,6 +151,7 @@ def compute_event_based_metrics(model, data_loader) -> Dict[str, float]:
 
     log.info(f"3/3: Comparing events... Found {len(true_events)} true events and {len(pred_events)} predicted events.")
 
+    # (TP/FP/FN-laskenta pysyy samana)
     matched_true_events = []
     for pred in pred_events:
         found_match = False
@@ -175,3 +193,85 @@ def compute_event_based_metrics(model, data_loader) -> Dict[str, float]:
         "FP (events)": total_fp,
         "FN (events)": total_fn
     }
+
+
+# --- TÄMÄ FUNKTIO KORJATTU ---
+def find_optimal_threshold(model, val_loader) -> float:
+    """
+    Ajaa mallin validointidatan läpi ja etsii parhaan
+    kynnysarvon, joka maksimoi F1-pisteet.
+    """
+    log.info("Finding optimal decision threshold using validation data...")
+    device = torch.device('mps' if torch.backends.mps.is_available() else 'cpu')
+    if torch.cuda.is_available():
+        device = torch.device('cuda')
+    model.to(device)
+    model.eval()
+
+    fs = DATA_PARAMS['fs']
+    step_samples = int((DATA_PARAMS['window_sec'] - DATA_PARAMS['overlap_sec']) * fs)
+
+    all_probs_list = []
+    all_masks_list = []
+    with torch.no_grad():
+        # --- KORJAUS 2: Purkaa 3 arvoa ---
+        for images_seq, masks_2d, _ in tqdm(val_loader, desc="Optimizing Threshold"):
+            images_seq = images_seq.to(device)
+
+            seg_logits = model(images_seq)
+            outputs_2d_probs = torch.sigmoid(seg_logits)
+
+            all_probs_list.append(outputs_2d_probs.cpu())
+            all_masks_list.append(masks_2d.cpu())
+
+    all_probs_tensor = torch.cat(all_probs_list, dim=0)
+    all_masks_tensor = torch.cat(all_masks_list, dim=0)
+
+    h_out, w_out = all_probs_tensor.shape[2], all_probs_tensor.shape[3]
+    all_masks_tensor_resized = F.interpolate(all_masks_tensor, size=(h_out, w_out), mode='nearest')
+
+    stitched_prob_2d = _stitch_predictions(all_probs_tensor, step_samples)
+    stitched_mask_2d = _stitch_predictions(all_masks_tensor_resized, step_samples)
+
+    mask_1d_true = _internal_convert_2d_mask_to_1d(stitched_mask_2d.squeeze().numpy())
+    true_events = _get_events_from_mask(mask_1d_true, fs)
+
+    best_f1 = -1.0
+    best_threshold = 0.5
+
+    search_space = np.arange(0.2, 0.95, 0.05)
+    log.info(f"Testing {len(search_space)} thresholds: {np.round(search_space, 2)}")
+
+    # (Loppuosa F1-laskennasta pysyy samana)
+    for threshold in search_space:
+        mask_1d_pred = _internal_convert_2d_mask_to_1d((stitched_prob_2d.squeeze().numpy() > threshold))
+        pred_events = _get_events_from_mask(mask_1d_pred, fs)
+        total_tp, total_fp = 0, 0
+        matched_true_events = []
+
+        for pred in pred_events:
+            found_match = False
+            for j, true in enumerate(true_events):
+                if j in matched_true_events:
+                    continue
+                iou = _calculate_iou(pred, true)
+                if iou > METRIC_PARAMS['iou_threshold']:
+                    matched_true_events.append(j)
+                    found_match = True
+                    break
+            if found_match:
+                total_tp += 1
+            else:
+                total_fp += 1
+
+        total_fn = len(true_events) - len(matched_true_events)
+        epsilon = 1e-6
+        f1_score = (2 * total_tp + epsilon) / (2 * total_tp + total_fp + total_fn + epsilon)
+        log.debug(f"Threshold {threshold:.2f} -> F1: {f1_score:.4f} (TP:{total_tp}, FP:{total_fp}, FN:{total_fn})")
+
+        if f1_score > best_f1:
+            best_f1 = f1_score
+            best_threshold = threshold
+
+    log.info(f"Optimal threshold found: {best_threshold:.2f} (F1-score: {best_f1:.4f})")
+    return best_threshold

@@ -7,6 +7,7 @@ import time
 import shutil
 from utils.logger import setup_logging
 from training_parameters import DATA_PARAMS
+# Käytetään tiedostonimiä, jotka annoit
 from data_preprocess import handler, bandpassfilter, normalization, cwt_transform
 from utils import diagnostics
 
@@ -98,27 +99,36 @@ def main():
         x_windows, y_masks = segment_data(raw, window_sec=WINDOW_SEC, overlap_sec=OVERLAP_SEC)
         log.info(f"Segmented to 1D data. X shape: {x_windows.shape}, Y shape: {y_masks.shape}")
 
+        # x_images on nyt (N, 3, H, W), y_images on (N, 1, H, W)
         x_images, y_images = cwt_transform.transform_windows_to_images(
             x_windows, y_masks, fs
         )
-        log.info(f"Converted to 2D images. X_images shape: {x_images.shape}, Y_images shape: {y_images.shape}")
+        log.info(
+            f"Converted to 3-Channel 2D images. X_images shape: {x_images.shape}, Y_images shape: {y_images.shape}")
 
         try:
+            # --- KORJAUS TÄSSÄ ---
+            # Etsi ensimmäinen sukkula 1D-maskien (y_masks) perusteella.
             first_spindle_idx = np.where(np.sum(y_masks, axis=1) > 0)[0][0]
+
             if first_spindle_idx >= 0:
                 log.info(f"Found first spindle in window {first_spindle_idx}. Saving diagnostic plot.")
                 plot_save_path = examples_dir / f"{patient_id}_spindle_example_idx{first_spindle_idx}.png"
+
+                # Välitä oikeat (uudet) datat diagnostiikkafunktiolle
                 diagnostics.save_diagnostic_plot(
                     signal_1d=x_windows[first_spindle_idx],
                     mask_1d=y_masks[first_spindle_idx],
-                    image_2d=x_images[first_spindle_idx],
-                    mask_2d=y_images[first_spindle_idx],
+                    image_3c=x_images[first_spindle_idx],  # Tämä on (3, H, W)
+                    mask_2d=y_images[first_spindle_idx],  # Tämä on (1, H, W)
                     fs=fs,
                     save_path=plot_save_path
                 )
         except IndexError:
+            # Tämä on normaalia, jos potilaalla ei ole sukkuloita
             log.warning("No spindles found for this subject. No diagnostic plot will be saved.")
         except Exception as e:
+            # Tämä nappasi aiemmin virheeni
             log.error(f"Failed to save diagnostic plot: {e}")
 
         x_path = output_dir / f"{patient_id}_X_images.npy"
@@ -127,7 +137,7 @@ def main():
         np.save(x_path, x_images)
         np.save(y_path, y_images)
         np.save(x_1d_path, x_windows)
-        log.info(f"Saved final 2D images and 1D signals to {output_dir}")
+        log.info(f"Saved final 3-Channel images and 1D signals to {output_dir}")
 
     end_time = time.time()
     log.info(f"\n---Full preprocessing complete. Total time: {end_time - start_time:.2f} seconds ---")

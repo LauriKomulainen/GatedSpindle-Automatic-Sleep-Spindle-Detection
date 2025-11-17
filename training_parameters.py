@@ -8,10 +8,10 @@ Central configuration file for all training hyperparameters and data settings.
 TRAINING_PARAMS = {
     'batch_size': 16,
     'learning_rate': 1e-4,  # (0.0001)
-    'dropout_rate': 0.2,
+    'dropout_rate': 0.4,
     'optimizer_type': 'Adam',
-    'num_epochs': 150,  # Max epochs to run
-    'early_stopping_patience': 15  # How long to wait for improvement
+    'num_epochs': 25,  # Max epochs to run
+    'early_stopping_patience': 5  # How long to wait for improvement
 }
 
 # --- Data & Preprocessing Parameters ---
@@ -37,6 +37,10 @@ METRIC_PARAMS = {
     'spindle_freq_low': 11.0,  # Start frequency for defining a spindle
     'spindle_freq_high': 16.0,  # End frequency for defining a spindle
     'iou_threshold': 0.2,  # 20% overlap = True Positive
-    'min_duration_sec': 0.3,  # Min duration for a prediction to be valid
+    'min_duration_sec': 0.5,  # Min duration for a prediction to be valid
     'max_duration_sec': 3.0  # Max duration for a prediction to be valid
+}
+
+TEST_FAST_FRACTION = {
+    'FAST_TEST_FRACTION': 0.2 # E.g., 0.2 takes only 20% of data. Use 1.0 for full training
 }

@@ -9,10 +9,10 @@ from datetime import datetime
 from collections import defaultdict
 
 from utils.logger import setup_logging
-from training_parameters import TRAINING_PARAMS, DATA_PARAMS
+from training_parameters import TRAINING_PARAMS, DATA_PARAMS, TEST_FAST_FRACTION
 from data_preprocess.dataset import get_dataloaders
 from UNET_model.model import UNet, train_model
-from UNET_model.evaluation_metrics import compute_event_based_metrics
+from UNET_model.evaluation_metrics import compute_event_based_metrics, find_optimal_threshold
 from utils.diagnostics import save_prediction_plot
 
 setup_logging("training.log")
@@ -20,7 +20,13 @@ log = logging.getLogger(__name__)
 
 if __name__ == "__main__":
 
+    FAST_TEST_FRACTION = TEST_FAST_FRACTION['FAST_TEST_FRACTION']
+
     params = TRAINING_PARAMS
+    if FAST_TEST_FRACTION < 1.0:
+        log.warning(f"--- RUNNING IN FAST TEST MODE (DATA FRACTION: {FAST_TEST_FRACTION}) ---")
+        params['num_epochs'] = 10
+        params['early_stopping_patience'] = 5
 
     log.info("---Starting U-Net Training: Leave-One-Subject-Out (LOSO) ---")
     log.info(f"Using hyperparameters: {params}")
@@ -35,7 +41,8 @@ if __name__ == "__main__":
 
     log.info(f"---Starting {len(all_subjects)}-Fold LOSO Cross-Validation ---")
 
-    for k in range(len(all_subjects)):
+    for k in [3]:
+        # for k in range(len(all_subjects)):
 
         test_subject_id = [all_subjects[k]]
         val_subject_id = [all_subjects[(k + 1) % len(all_subjects)]]
@@ -56,7 +63,8 @@ if __name__ == "__main__":
                 batch_size=params['batch_size'],
                 train_subject_ids=train_subject_ids,
                 val_subject_ids=val_subject_id,
-                test_subject_ids=test_subject_id
+                test_subject_ids=test_subject_id,
+                use_fraction=FAST_TEST_FRACTION
             )
         except Exception as e:
             log.error(f"Data loading failed: {e}")
@@ -98,7 +106,11 @@ if __name__ == "__main__":
             plt.close()
             log.info(f"Loss curve saved: {loss_plot_path}")
 
-        metrics = compute_event_based_metrics(model, test_loader)
+        log.info("Finding optimal decision threshold using validation data...")
+        optimal_thresh = find_optimal_threshold(model, val_loader)
+
+        log.info(f"Computing FINAL test metrics using optimal threshold: {optimal_thresh:.2f}")
+        metrics = compute_event_based_metrics(model, test_loader, threshold=optimal_thresh)
 
         log.info(f"--- 🏁 FOLD {fold_name} COMPLETE ---")
         log.info(f"Test results for patient {test_subject_id[0]}:")

@@ -6,6 +6,7 @@ from pathlib import Path
 import torch
 import os
 import logging
+
 log = logging.getLogger(__name__)
 
 from data_preprocess.cwt_transform import (
@@ -14,31 +15,38 @@ from data_preprocess.cwt_transform import (
 )
 
 
+# (save_diagnostic_plot pysyy samana, se on jo oikein 3-kanavaiselle kuvalle)
 def save_diagnostic_plot(
         signal_1d: np.ndarray,
         mask_1d: np.ndarray,
-        image_2d: np.ndarray,
+        image_3c: np.ndarray,  # <--- Tämä on nyt (3, H, W)
         mask_2d: np.ndarray,
         fs: float,
         save_path: Path
 ):
     """
-    Tallentaa 3-osaisen diagnostiikkakuvan yhdestä ikkunasta (Englanniksi).
+    Tallentaa 5-osaisen diagnostiikkakuvan yhdestä ikkunasta.
+    Näyttää 1D-signaalin, 3 CWT-kanavaa ja 2D-maskin.
     """
     try:
-        image_2d = np.squeeze(image_2d)
+        # Pura kanavat
+        image_ch0 = np.squeeze(image_3c[0])
+        image_ch1 = np.squeeze(image_3c[1])
+        image_ch2 = np.squeeze(image_3c[2])
         mask_2d = np.squeeze(mask_2d)
 
         window_sec = len(signal_1d) / fs
         time_axis = np.linspace(0, window_sec, len(signal_1d))
 
-        fig, (ax1, ax2, ax3) = plt.subplots(
-            3, 1,
-            figsize=(10, 10),
-            gridspec_kw={'height_ratios': [1, 2, 2]},
+        fig, (ax1, ax2, ax3, ax4, ax5) = plt.subplots(
+            5, 1,
+            figsize=(10, 18),
+            gridspec_kw={'height_ratios': [1, 2, 2, 2, 2]},
             sharex=True
         )
         fig.suptitle(f"Diagnostic Plot: {save_path.stem}", fontsize=16)
+
+        cwt_extent = [0, window_sec, CWT_FREQ_LOW, CWT_FREQ_HIGH]
 
         ax1.plot(time_axis, signal_1d, color='black', label='Signal (Z-score)')
         ax1.fill_between(time_axis,
@@ -53,22 +61,22 @@ def save_diagnostic_plot(
         ax1.legend(loc='upper right')
         ax1.grid(linestyle='--', alpha=0.6)
 
-        img = ax2.imshow(image_2d,
-                         aspect='auto',
-                         origin='lower',
-                         cmap='jet',
-                         extent=[0, window_sec, CWT_FREQ_LOW, CWT_FREQ_HIGH])
-        ax2.set_title("2. Model Input: 2D CWT Image (X_image)")
+        ax2.imshow(image_ch0, aspect='auto', origin='lower', cmap='jet', extent=cwt_extent)
+        ax2.set_title("2. Model Input: Channel 0 (Main 1-35 Hz)")
         ax2.set_ylabel("Frequency (Hz)")
 
-        mask_img = ax3.imshow(mask_2d,
-                              aspect='auto',
-                              origin='lower',
-                              cmap='gray',
-                              extent=[0, window_sec, CWT_FREQ_LOW, CWT_FREQ_HIGH])
-        ax3.set_title("3. Model Target: 2D Mask (Y_image)")
+        ax3.imshow(image_ch1, aspect='auto', origin='lower', cmap='viridis', extent=cwt_extent)
+        ax3.set_title("3. Model Input: Channel 1 (Delta Context 1-4 Hz)")
         ax3.set_ylabel("Frequency (Hz)")
-        ax3.set_xlabel("Time (s)")
+
+        ax4.imshow(image_ch2, aspect='auto', origin='lower', cmap='hot', extent=cwt_extent)
+        ax4.set_title("4. Model Input: Channel 2 (Muscle Context 20-30 Hz)")
+        ax4.set_ylabel("Frequency (Hz)")
+
+        ax5.imshow(mask_2d, aspect='auto', origin='lower', cmap='gray', extent=cwt_extent)
+        ax5.set_title("5. Model Target: 2D Mask (Y_image)")
+        ax5.set_ylabel("Frequency (Hz)")
+        ax5.set_xlabel("Time (s)")
 
         plt.tight_layout(rect=[0, 0.03, 1, 0.95])
 
@@ -85,10 +93,7 @@ def save_diagnostic_plot(
 
 
 def _convert_2d_mask_to_1d(mask_2d: np.ndarray) -> np.ndarray:
-    """
-    Muuntaa 2D-ennustusmaskin 1D-aikasarjaksi.
-    (Ei muutoksia tähän)
-    """
+    """ Muuntaa 2D-ennustusmaskin 1D-aikasarjaksi. """
     frequencies = np.linspace(CWT_FREQ_LOW, CWT_FREQ_HIGH, CWT_FREQ_BINS)
     y_indices = np.where(
         (frequencies >= SPINDLE_FREQ_LOW) &
@@ -101,6 +106,7 @@ def _convert_2d_mask_to_1d(mask_2d: np.ndarray) -> np.ndarray:
     return mask_1d
 
 
+# --- TÄMÄ FUNKTIO KORJATTU ---
 def save_prediction_plot(
         model,
         loader,
@@ -110,7 +116,7 @@ def save_prediction_plot(
         prefix: str
 ):
     """
-    Tallentaa 'num_to_save' määrän ennustuskuvia 2-paneelin muodossa (Englanniksi).
+    Tallentaa 'num_to_save' määrän ennustuskuvia 2-paneelin muodossa.
     """
     log.info(f"Saving {num_to_save} prediction examples ({prefix})...")
     device = torch.device(
@@ -125,11 +131,15 @@ def save_prediction_plot(
         except Exception:
             random_loader = loader
 
-        for i, (images_2d, masks_2d, signals_1d) in enumerate(random_loader):
+        # --- KORJAUS 1: Datalataaja palauttaa 3 arvoa ---
+        for i, (images_seq, masks_2d, signals_1d) in enumerate(random_loader):
             if saved_count >= num_to_save:
                 break
-            images_2d, masks_2d = images_2d.to(device), masks_2d.to(device)
-            outputs_2d = model(images_2d)
+
+            # --- KORJAUS 2: Syötä sekvenssi mallille ---
+            images_seq, masks_2d = images_seq.to(device), masks_2d.to(device)
+            outputs_2d = model(images_seq)  # Malli ottaa sekvenssin (B,S,C,H,W)
+
             outputs_2d = torch.sigmoid(outputs_2d)
             preds_2d = (outputs_2d > 0.5).float()
 
@@ -179,7 +189,6 @@ def save_prediction_plot(
 
             plt.tight_layout(rect=[0, 0.03, 1, 0.95])
             save_path = os.path.join(output_dir, f"{prefix}_prediction_{i}.png")
-            # --- Lisätty DPI (Laatu) ---
             plt.savefig(save_path, dpi=300)
             plt.close(fig)
             saved_count += 1

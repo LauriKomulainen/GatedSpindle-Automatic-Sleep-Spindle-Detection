@@ -3,24 +3,27 @@
 import torch
 import numpy as np
 import os
-from torch.utils.data import Dataset, DataLoader, ConcatDataset
+from torch.utils.data import Dataset, DataLoader, ConcatDataset, Subset  # <--- LISÄÄ IMPORT
 import logging
+import random  # <--- LISÄÄ IMPORT
 
 log = logging.getLogger(__name__)
 
 
 class SpindleDataset(Dataset):
     """
-    Custom PyTorch Dataset, loads 3 files:
-    1. 2D CWT Image (X_image)
-    2. 2D CWT Mask (Y_image)
-    3. 1D Signal Window (X_1D)
+    Custom PyTorch Dataset.
+    Hakee 3 kuvan sekvenssin (X), mutta vain
+    keskimmäisen kuvan maskin (Y).
     """
 
-    def __init__(self, x_img_path, y_img_path, x_1d_path):
+    def __init__(self, x_img_path, y_img_path, x_1d_path, seq_len=3):
         self.x_data = np.load(x_img_path).astype(np.float32)
         self.y_data = np.load(y_img_path).astype(np.float32)
         self.x_1d_data = np.load(x_1d_path).astype(np.float32)
+        self.seq_len = seq_len
+        self.padding = self.seq_len // 2  # 3 -> 1
+
         assert len(self.x_data) == len(self.y_data) == len(self.x_1d_data), "Data file lengths do not match!"
         log.info(f"Loaded {len(self.x_data)} data triplets from {os.path.basename(x_img_path)}")
 
@@ -28,10 +31,30 @@ class SpindleDataset(Dataset):
         return len(self.x_data)
 
     def __getitem__(self, idx):
+
+        # --- Rakenna sekvenssi ---
+        indices = []
+        for i in range(self.seq_len):
+            current_idx = idx - self.padding + i
+            # Reunapeilaus
+            if current_idx < 0:
+                current_idx = abs(current_idx)
+            elif current_idx >= len(self.x_data):
+                current_idx = (len(self.x_data) - 1) - (current_idx - len(self.x_data))
+            indices.append(current_idx)
+
+        x_img_seq = [torch.from_numpy(self.x_data[i]) for i in indices]
+
+        x_img_tensor = torch.stack(x_img_seq, dim=0)
+
+        # Palauta VAIN keskimmäinen maski ja 1D-signaali
+        y_img_tensor = torch.from_numpy(self.y_data[idx])
+        x_1d_tensor = torch.from_numpy(self.x_1d_data[idx])
+
         return (
-            torch.from_numpy(self.x_data[idx]),
-            torch.from_numpy(self.y_data[idx]),
-            torch.from_numpy(self.x_1d_data[idx])
+            x_img_tensor,  # (S, C, H, W)
+            y_img_tensor,  # (C, H, W)
+            x_1d_tensor  # (L)
         )
 
 
@@ -39,7 +62,9 @@ def get_dataloaders(processed_data_dir: str,
                     batch_size: int,
                     train_subject_ids: list,
                     val_subject_ids: list,
-                    test_subject_ids: list):
+                    test_subject_ids: list,
+                    use_fraction: float = 1.0):  # <--- LISÄTTY PARAMETRI
+
     log.info(f"Training data: {train_subject_ids}")
     log.info(f"Validation data: {val_subject_ids}")
     log.info(f"Test data: {test_subject_ids}")
@@ -56,11 +81,26 @@ def get_dataloaders(processed_data_dir: str,
             log.warning(f"Skipping {subject_id}, required files (X_images, Y_images, X_1D) not found.")
             continue
 
-        datasets[subject_id] = SpindleDataset(x_img_path, y_img_path, x_1d_path)
+        datasets[subject_id] = SpindleDataset(x_img_path, y_img_path, x_1d_path, seq_len=3)
 
     train_ds = ConcatDataset([datasets[sid] for sid in train_subject_ids if sid in datasets])
     val_ds = ConcatDataset([datasets[sid] for sid in val_subject_ids if sid in datasets])
     test_ds = ConcatDataset([datasets[sid] for sid in test_subject_ids if sid in datasets])
+
+    # --- LISÄTTY LOHKO: DATAN PIENENTÄMINEN ---
+    if use_fraction < 1.0:
+        log.warning(f"Using only {use_fraction * 100:.0f}% of data for fast testing.")
+
+        def get_subset(dataset):
+            total_size = len(dataset)
+            subset_size = int(total_size * use_fraction)
+            indices = random.sample(range(total_size), subset_size)
+            return Subset(dataset, indices)
+
+        train_ds = get_subset(train_ds)
+        val_ds = get_subset(val_ds)
+        test_ds = get_subset(test_ds)
+    # ----------------------------------------
 
     log.info(f"Total training images: {len(train_ds)}")
     log.info(f"Total validation images: {len(val_ds)}")
@@ -68,8 +108,8 @@ def get_dataloaders(processed_data_dir: str,
 
     common_loader_params = {
         'batch_size': batch_size,
-        'num_workers': 0,  # Set to 0 for stability on macOS/MPS
-        'pin_memory': False,  # Disabled as it's not supported on MPS
+        'num_workers': 0,
+        'pin_memory': False,
     }
 
     train_loader = DataLoader(train_ds, shuffle=True, **common_loader_params)
