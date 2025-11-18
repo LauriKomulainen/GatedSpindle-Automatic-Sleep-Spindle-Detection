@@ -8,27 +8,28 @@ import logging
 from tqdm import tqdm
 import torch.nn.functional as F
 
-# Tarkista, että nämä importit vastaavat tiedostorakennettasi
 from utils.diagnostics import save_prediction_plot
 from .attention_gates import AttentionGate
 from .augmentations import SpecAugment
 from .losses import DiceBCELoss
-from .memory import BiConvLSTM
+from .memory import Bottleneck3D  # <--- MUUTETTU
 
 log = logging.getLogger(__name__)
 
 
-# ... (UNet-luokka pysyy samana, ei muutoksia) ...
 class UNet(nn.Module):
     def __init__(self, dropout_rate):
         super(UNet, self).__init__()
         self.dropout = nn.Dropout(dropout_rate)
 
+        # Määritellään suojatut kanavat augmentaatiolle (ks. augmentations.py)
+        # Kanava 2 (lihas) suojataan, jotta malli oppii tunnistamaan sen.
         self.spec_aug = SpecAugment(
             freq_mask_prob=0.3,
             time_mask_prob=0.3,
             freq_mask_param=15,
-            time_mask_param=30
+            time_mask_param=30,
+            protected_channels=[2]  # <--- UUSI PARAMETRI: Suojaa lihaskanava (idx 2)
         )
 
         def conv_block(in_channels, out_channels):
@@ -53,7 +54,21 @@ class UNet(nn.Module):
         self.pool = nn.MaxPool2d(kernel_size=2, stride=2)
         self.e5_bottleneck_conv = conv_block(512, 1024)
 
-        self.bilstm_bottleneck = BiConvLSTM(input_dim=1024, hidden_dim=512, kernel_size=(3, 3))
+        # --- UUSI 3D BOTTLENECK ---
+        # Input dim 1024, Hidden 512. Output on automaattisesti 2*1024 (koska korvaa BiLSTM:n)
+        # Huom: Bottleneck3D:n output kanavat säädetään final_conv:ssa.
+        # BiLSTM antoi ulos 2 * hidden (2*512 = 1024).
+        # Meidän Bottleneck3D antaa ulos in_channels * 2 = 2048.
+        # JOTEN säädetään tässä dimensiota:
+        self.bottleneck_3d = Bottleneck3D(in_channels=1024, hidden_channels=512)
+        # Jos haluat täsmälleen saman dimension kuin ennen (1024), muuta Bottleneck3D:n final_conv kertoimeksi 1.
+        # Mutta Decoderin up6 odottaa sisään 1024 kanavaa.
+        # BiLSTM antoi (forward+backward) = 1024.
+        # Säädetään Bottleneck3D palauttamaan 1024 kanavaa:
+        # (Tämä vaatii pienen muutoksen memory.py:n final_conv:iin -> in_channels * 1)
+        # TAI käytämme Conv1x1 tässä palauttamaan sen 1024:ään.
+
+        self.bottleneck_reducer = nn.Conv2d(2048, 1024, kernel_size=1)
 
         # --- Decoder ---
         self.up6 = up_conv(1024, 512)
@@ -77,29 +92,47 @@ class UNet(nn.Module):
     def forward(self, x):
         b, s, c, h, w = x.shape
         x_cnn = x.view(b * s, c, h, w)
-        if self.training:
-            x_cnn = self.spec_aug(x_cnn)
 
-        e1 = self.e1(x_cnn);
+        if self.training:
+            x_cnn = self.spec_aug(x_cnn)  # Augmentaatio (nyt suojaa kanavaa 2)
+
+        e1 = self.e1(x_cnn)
         p1 = self.pool(e1)
-        e2 = self.e2(p1);
+        e2 = self.e2(p1)
         p2 = self.pool(e2)
-        e3 = self.e3(p2);
+        e3 = self.e3(p2)
         p3 = self.pool(e3)
-        e4 = self.e4(p3);
+        e4 = self.e4(p3)
         p4 = self.pool(e4)
         e5 = self.e5_bottleneck_conv(p4)
 
+        # --- 3D BOTTLENECK LOGIC ---
         _, c_enc, h_enc, w_enc = e5.shape
-        e5_seq = e5.view(b, s, c_enc, h_enc, w_enc)
-        lstm_out = self.bilstm_bottleneck(e5_seq)
+        # Muutetaan muotoon: (Batch, Channels, Sequence, Height, Width)
+        e5_seq = e5.view(b, s, c_enc, h_enc, w_enc).permute(0, 2, 1, 3, 4)
 
+        # Ajetaan 3D konvoluutio
+        temporal_out = self.bottleneck_3d(e5_seq)  # -> (B, 2048, S, H, W)
+
+        # Palautetaan muotoon (Batch * Sequence, Channels, Height, Width)
+        # Permute takaisin: (B, S, C, H, W) -> Reshape
+        temporal_out = temporal_out.permute(0, 2, 1, 3, 4).contiguous()
+        temporal_out = temporal_out.view(b * s, -1, h_enc, w_enc)  # -> (B*S, 2048, H, W)
+
+        # Pienennetään kanavat takaisin 1024:ään, jotta dekooderi toimii
+        lstm_out = self.bottleneck_reducer(temporal_out)
+
+        # --- Decoder (pysyy samana) ---
         e1_center = e1.view(b, s, 64, h, w)[:, s // 2]
         e2_center = e2.view(b, s, 128, h // 2, w // 2)[:, s // 2]
         e3_center = e3.view(b, s, 256, h // 4, w // 4)[:, s // 2]
         e4_center = e4.view(b, s, 512, h // 8, w // 8)[:, s // 2]
 
-        d6 = self.up6(lstm_out)
+        # Bottleneck outputista otetaan myös vain keskimmäinen (S // 2) dekooderille
+        # Koska lstm_out on (B*S, ...), puretaan se
+        lstm_out_center = lstm_out.view(b, s, 1024, h_enc, w_enc)[:, s // 2]
+
+        d6 = self.up6(lstm_out_center)
         ag6 = self.ag6(g=d6, x=e4_center)
         if d6.shape[2:] != ag6.shape[2:]: d6 = F.interpolate(d6, size=ag6.shape[2:], mode='bilinear',
                                                              align_corners=False)
@@ -127,6 +160,7 @@ class UNet(nn.Module):
         return out
 
 
+# ... train_model funktio pysyy samana ...
 def train_model(model, train_loader, val_loader, optimizer_type, learning_rate, num_epochs, early_stopping_patience,
                 output_dir, fs):
     device = torch.device('mps' if torch.backends.mps.is_available() else 'cpu')
@@ -143,8 +177,8 @@ def train_model(model, train_loader, val_loader, optimizer_type, learning_rate, 
     else:
         optimizer = optim.Adam(model.parameters(), lr=learning_rate)
 
-    # KORJAUS: Learning rate scheduler lisätty
-    scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=2, verbose=True)
+        # KORJAUS: Poistettu 'verbose=True', joka aiheutti virheen
+    scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=2)
 
     train_losses, val_losses = [], []
     best_val_loss = float('inf')

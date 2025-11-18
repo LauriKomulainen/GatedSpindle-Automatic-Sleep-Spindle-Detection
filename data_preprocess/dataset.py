@@ -9,56 +9,42 @@ import random
 
 log = logging.getLogger(__name__)
 
-
 class SpindleDataset(Dataset):
-    """
-    Custom PyTorch Dataset.
-    Hakee 3 kuvan sekvenssin (X), mutta vain
-    keskimmäisen kuvan maskin (Y).
-    """
-
     def __init__(self, x_img_path, y_img_path, x_1d_path, seq_len=3):
-        # KORJAUS: mmap_mode='r' pitää datan levyllä, ei lataa RAMiin
-        self.x_data = np.load(x_img_path, mmap_mode='r')
-        self.y_data = np.load(y_img_path, mmap_mode='r')
-        self.x_1d_data = np.load(x_1d_path, mmap_mode='r')
+        self.x_path = x_img_path
+        self.y_path = y_img_path
+        self.x_1d_path = x_1d_path
         self.seq_len = seq_len
         self.padding = self.seq_len // 2
 
-        # Tarkistetaan pituudet lataamatta dataa
-        assert self.x_data.shape[0] == self.y_data.shape[0] == self.x_1d_data.shape[0], "Data lengths match error"
-        log.info(f"Loaded {len(self.x_data)} data triplets (mmap mode) from {os.path.basename(x_img_path)}")
+        temp_x = np.load(x_img_path, mmap_mode='r')
+        self.length = temp_x.shape[0]
+        del temp_x
 
     def __len__(self):
-        return len(self.x_data)
+        return self.length
 
     def __getitem__(self, idx):
+        x_mmap = np.load(self.x_path, mmap_mode='r')
+        y_mmap = np.load(self.y_path, mmap_mode='r')
+        x1d_mmap = np.load(self.x_1d_path, mmap_mode='r')
 
-        # --- Rakenna sekvenssi ---
         indices = []
         for i in range(self.seq_len):
             current_idx = idx - self.padding + i
-            # Reunapeilaus
             if current_idx < 0:
                 current_idx = abs(current_idx)
-            elif current_idx >= len(self.x_data):
-                current_idx = (len(self.x_data) - 1) - (current_idx - len(self.x_data))
+            elif current_idx >= self.length:
+                current_idx = (self.length - 1) - (current_idx - self.length)
             indices.append(current_idx)
 
-        # KORJAUS: np.array(...) pakottaa datan kopioinnin levyltä RAMiin tässä kohtaa.
-        # Ilman tätä PyTorch saattaa yrittää käsitellä mmap-objektia väärin.
-        x_img_seq = [torch.from_numpy(np.array(self.x_data[i], dtype=np.float32)) for i in indices]
+        x_seq_arrays = [x_mmap[i].astype(np.float32) for i in indices]
+        x_img_tensor = torch.tensor(np.stack(x_seq_arrays), dtype=torch.float32)
 
-        x_img_tensor = torch.stack(x_img_seq, dim=0)
+        y_img_tensor = torch.tensor(y_mmap[idx].astype(np.float32), dtype=torch.float32)
+        x_1d_tensor = torch.tensor(x1d_mmap[idx].astype(np.float32), dtype=torch.float32)
 
-        y_img_tensor = torch.from_numpy(np.array(self.y_data[idx], dtype=np.float32))
-        x_1d_tensor = torch.from_numpy(np.array(self.x_1d_data[idx], dtype=np.float32))
-
-        return (
-            x_img_tensor,  # (S, C, H, W)
-            y_img_tensor,  # (C, H, W)
-            x_1d_tensor  # (L)
-        )
+        return x_img_tensor, y_img_tensor, x_1d_tensor
 
 
 def get_dataloaders(processed_data_dir: str,
@@ -109,7 +95,7 @@ def get_dataloaders(processed_data_dir: str,
 
     common_loader_params = {
         'batch_size': batch_size,
-        'num_workers': 0,  # KORJAUS: 0 on turvallisin Macilla muistivuotojen estämiseksi.
+        'num_workers': 2,
         'pin_memory': False,
     }
 
