@@ -3,8 +3,11 @@
 import torch
 import torch.nn as nn
 import logging
-from utils.logger import setup_logging
-setup_logging("training.log")
+# --- POISTA NÄMÄ RIVIT ---
+# from utils.logger import setup_logging
+# setup_logging("training.log")
+# -------------------------
+
 log = logging.getLogger(__name__)
 
 class ConvLSTMCell(nn.Module):

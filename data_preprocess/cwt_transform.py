@@ -54,27 +54,35 @@ def _create_cwt_image_3channel(signal_1d: np.ndarray, fs: float) -> np.ndarray:
         return np.zeros((3, *image_shape), dtype=np.float32)
 
     cwt_complex = cwt_complex[::-1, :]
-    cwt_mag = np.abs(cwt_complex)
+    cwt_mag = np.abs(cwt_complex)  # Tämä on raaka, normalisoimaton data
 
-    # --- KORJAUS TÄSSÄ ---
-    # 1. Normalisoi KOKO kuva (1-35 Hz) YHDEN KERRAN.
+    # --- KORJAUS ALKAA ---
+
+    # 1. Normalisoi KOKO kuva (1-35 Hz) pääkanavaksi.
     channel_0 = _normalize_channel(cwt_mag)
 
-    # 2. Luo Delta-kanava KOPIOIMALLA arvot normalisoidusta pääkuvasta
+    # 2. Luo Delta-kanava: Eristä DELTA-kaista RAA'ASTA datasta ja normalisoi se ERIKSEEN.
     delta_indices = np.where(
         (frequencies >= DELTA_FREQ_LOW) & (frequencies <= DELTA_FREQ_HIGH)
     )[0]
     channel_1 = np.zeros(image_shape, dtype=np.float32)
     if len(delta_indices) > 0:
-        channel_1[delta_indices, :] = channel_0[delta_indices, :]  # Suora kopio, ei uutta normalisointia
+        # Eristä kaista ALKUPERÄISESTÄ magnitudidatasta (cwt_mag)
+        delta_band_raw = cwt_mag[delta_indices, :]
+        # Normalisoi vain tämä kaista itsenäisesti
+        channel_1[delta_indices, :] = _normalize_channel(delta_band_raw)
 
-    # 3. Luo Lihas-kanava KOPIOIMALLA arvot normalisoidusta pääkuvasta
+    # 3. Luo Lihas-kanava: Eristä LIHAS-kaista RAA'ASTA datasta ja normalisoi se ERIKSEEN.
     muscle_indices = np.where(
         (frequencies >= MUSCLE_FREQ_LOW) & (frequencies <= MUSCLE_FREQ_HIGH)
     )[0]
     channel_2 = np.zeros(image_shape, dtype=np.float32)
     if len(muscle_indices) > 0:
-        channel_2[muscle_indices, :] = channel_0[muscle_indices, :]  # Suora kopio, ei uutta normalisointia
+        # Eristä kaista ALKUPERÄISESTÄ magnitudidatasta (cwt_mag)
+        muscle_band_raw = cwt_mag[muscle_indices, :]
+        # Normalisoi vain tämä kaista itsenäisesti
+        channel_2[muscle_indices, :] = _normalize_channel(muscle_band_raw)
+
     # --- KORJAUS PÄÄTTYY ---
 
     cwt_3_channel = np.stack([channel_0, channel_1, channel_2], axis=0)

@@ -3,9 +3,9 @@
 import torch
 import numpy as np
 import os
-from torch.utils.data import Dataset, DataLoader, ConcatDataset, Subset  # <--- LISÄÄ IMPORT
+from torch.utils.data import Dataset, DataLoader, ConcatDataset, Subset
 import logging
-import random  # <--- LISÄÄ IMPORT
+import random
 
 log = logging.getLogger(__name__)
 
@@ -63,7 +63,7 @@ def get_dataloaders(processed_data_dir: str,
                     train_subject_ids: list,
                     val_subject_ids: list,
                     test_subject_ids: list,
-                    use_fraction: float = 1.0):  # <--- LISÄTTY PARAMETRI
+                    use_fraction: float = 1.0):
 
     log.info(f"Training data: {train_subject_ids}")
     log.info(f"Validation data: {val_subject_ids}")
@@ -87,7 +87,6 @@ def get_dataloaders(processed_data_dir: str,
     val_ds = ConcatDataset([datasets[sid] for sid in val_subject_ids if sid in datasets])
     test_ds = ConcatDataset([datasets[sid] for sid in test_subject_ids if sid in datasets])
 
-    # --- LISÄTTY LOHKO: DATAN PIENENTÄMINEN ---
     if use_fraction < 1.0:
         log.warning(f"Using only {use_fraction * 100:.0f}% of data for fast testing.")
 
@@ -100,7 +99,6 @@ def get_dataloaders(processed_data_dir: str,
         train_ds = get_subset(train_ds)
         val_ds = get_subset(val_ds)
         test_ds = get_subset(test_ds)
-    # ----------------------------------------
 
     log.info(f"Total training images: {len(train_ds)}")
     log.info(f"Total validation images: {len(val_ds)}")
@@ -108,7 +106,7 @@ def get_dataloaders(processed_data_dir: str,
 
     common_loader_params = {
         'batch_size': batch_size,
-        'num_workers': 0,
+        'num_workers': 8,
         'pin_memory': False,
     }
 

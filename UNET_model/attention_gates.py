@@ -1,11 +1,12 @@
 # UNET_model/attention_gates.py
 
 import torch.nn as nn
+import torch.nn.functional as F  # <-- LISÄTTY IMPORT
+
 
 class AttentionGate(nn.Module):
     """
     Attention Gate -moduuli U-Netin skip connection -vaiheisiin.
-    Tämä on Additive Attention Gate (AG) PyTorch-toteutus.
     """
 
     def __init__(self, f_g, f_l, f_int):
@@ -17,40 +18,34 @@ class AttentionGate(nn.Module):
         """
         super(AttentionGate, self).__init__()
 
-        # Wg: 1x1 Conv gating signalille (g)
         self.Wg = nn.Sequential(
             nn.Conv2d(f_g, f_int, kernel_size=1, stride=1, padding=0),
             nn.BatchNorm2d(f_int)
         )
 
-        # Wx: 1x1 Conv skip connectionille (x)
         self.Wx = nn.Sequential(
             nn.Conv2d(f_l, f_int, kernel_size=1, stride=1, padding=0),
             nn.BatchNorm2d(f_int)
         )
 
-        # Huomio-painot (a): Yhdistetty ulostulo -> 1 kanava -> Sigmoid [0, 1]
         self.psi = nn.Sequential(
             nn.Conv2d(f_int, 1, kernel_size=1, stride=1, padding=0),
             nn.BatchNorm2d(1),
             nn.Sigmoid()
         )
-
-        # ReLU-aktivaatio käytetään yhdistämisen jälkeen
         self.relu = nn.ReLU(inplace=True)
 
-    def forward(self, x, g):
-        # 1. Gating
+    def forward(self, g, x):
+        """
+        g: Gating signal (dekooderista, esim. (B, C, 62, 124))
+        x: Skip connection (enkooderista, esim. (B, C, 62, 125))
+        """
         g1 = self.Wg(g)
-
-        # 2. Skip Connection
         x1 = self.Wx(x)
 
-        # 3. Yhdistetään ja aktivoidaan (g1 + x1)
+        if g1.shape[2:] != x1.shape[2:]:
+            g1 = F.interpolate(g1, size=x1.shape[2:], mode='bilinear', align_corners=False)
         psi = self.relu(g1 + x1)
 
-        # 4. Lasketaan huomio-painot (Attention Coefficients, a)
         psi = self.psi(psi)
-
-        # 5. Huomion sulauttaminen: Kerrotaan alkuperäinen skip connection -signaali huomio-painoilla.
         return x * psi

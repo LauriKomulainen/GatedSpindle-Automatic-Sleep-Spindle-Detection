@@ -7,11 +7,11 @@ Central configuration file for all training hyperparameters and data settings.
 # --- Training Hyperparameters ---
 TRAINING_PARAMS = {
     'batch_size': 16,
-    'learning_rate': 1e-4,  # (0.0001)
+    'learning_rate': 1e-4,
     'dropout_rate': 0.4,
     'optimizer_type': 'Adam',
-    'num_epochs': 25,  # Max epochs to run
-    'early_stopping_patience': 5  # How long to wait for improvement
+    'num_epochs': 30,  # Max epochs to run
+    'early_stopping_patience': 7  # How long to wait for improvement
 }
 
 # --- Data & Preprocessing Parameters ---
@@ -42,5 +42,5 @@ METRIC_PARAMS = {
 }
 
 TEST_FAST_FRACTION = {
-    'FAST_TEST_FRACTION': 0.2 # E.g., 0.2 takes only 20% of data. Use 1.0 for full training
+    'FAST_TEST_FRACTION': 1.0 # E.g., 0.2 takes only 20% of data. Use 1.0 for full training
 }
