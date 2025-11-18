@@ -11,7 +11,8 @@ import torch.nn.functional as F
 
 log = logging.getLogger(__name__)
 
-FIXED_BORDER_THRESH = 0.2  # Kiinteä matala kynnys (voit kokeilla 0.1-0.3)
+# KORJAUS: Nostettu kynnystä FP-arvojen vähentämiseksi (oli 0.2)
+FIXED_BORDER_THRESH = 0.4
 
 
 # --- TÄMÄ FUNKTIO ON NYT OPTIMOITU ---
@@ -66,11 +67,9 @@ def _find_events_dual_thresh(prob_1d: np.ndarray,
             # Muunna inklusiiviseen muotoon (alku, loppu)
             events.append((start, end - 1))
 
-            # Varmuuden vuoksi, jos alueet olisivat epäjärjestyksessä
+    # Varmuuden vuoksi, jos alueet olisivat epäjärjestyksessä
     events.sort(key=lambda x: x[0])
 
-    # Huom: Aiempi "merge_events" on poistettu, koska 'label'
-    # ja 'find_objects' löytävät jo yhdistetyt alueet oikein.
     return events
 
 
@@ -135,8 +134,7 @@ def _stitch_predictions(all_preds: torch.Tensor, step_samples: int) -> torch.Ten
 
 def compute_event_based_metrics(model, data_loader, threshold: float) -> Dict[str, float]:
     """
-    Laskee metriikat TAPAHTUMAPOHJAISESTI. (Pysyy samana)
-    Käyttää nyt kaksoiskynnystä, jossa 'threshold' on 'peak_thresh'.
+    Laskee metriikat TAPAHTUMAPOHJAISESTI.
     """
     device = torch.device('mps' if torch.backends.mps.is_available() else 'cpu')
     if torch.cuda.is_available():
@@ -180,8 +178,9 @@ def compute_event_based_metrics(model, data_loader, threshold: float) -> Dict[st
     prob_1d_pred = _internal_convert_2d_prob_to_1d(stitched_prob_2d.squeeze().numpy())
 
     # Etsi tapahtumat
-    # Käytä korkeaa kynnystä (0.5) ground truthille (koska se on 0/1)
+    # Ground truth aina 0.5 kynnyksellä
     true_events = _find_events_dual_thresh(mask_1d_true_bool.astype(float), 0.5, 0.1, fs)
+    # Ennusteet optimoidulla kynnyksellä ja tiukemmalla reunakynnyksellä (0.4)
     pred_events = _find_events_dual_thresh(prob_1d_pred, peak_thresh, border_thresh, fs)
 
     log.info(f"3/3: Comparing events... Found {len(true_events)} true events and {len(pred_events)} predicted events.")
@@ -223,7 +222,7 @@ def compute_event_based_metrics(model, data_loader, threshold: float) -> Dict[st
 
 def find_optimal_threshold(model, val_loader) -> float:
     """
-    Etsii parhaan 'peak_thresh' -kynnysarvon. (Pysyy samana)
+    Etsii parhaan 'peak_thresh' -kynnysarvon.
     """
     log.info(f"Finding optimal PEAK threshold (using fixed border thresh: {FIXED_BORDER_THRESH})...")
     device = torch.device('mps' if torch.backends.mps.is_available() else 'cpu')

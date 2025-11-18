@@ -4,34 +4,38 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-class DiceBCELoss(nn.Module):
-    def __init__(self, smooth=1.0, bce_weight=0.5, fp_weight=2.0):
-        super(DiceBCELoss, self).__init__()
-        self.smooth = smooth
-        self.bce_weight = bce_weight
-        self.fp_weight = fp_weight
-        self.bce = nn.BCEWithLogitsLoss(reduction='none')
 
-    def _dice_loss(self, outputs_sigmoid, targets):
-        outputs = outputs_sigmoid.reshape(-1)
-        targets = targets.reshape(-1)
-        intersection = (outputs * targets).sum()
-        dice = (2. * intersection + self.smooth) / (outputs.sum() + targets.sum() + self.smooth)
-        return 1 - dice
+class TverskyLoss(nn.Module):
+    def __init__(self, alpha=0.3, beta=0.7, smooth=1.0):
+        """
+        Tversky Loss F1-scoren optimointiin ja FP-arvojen vähentämiseen.
+        alpha: Paino False Negativeille (Recall). Esim 0.3.
+        beta:  Paino False Positiveille (Precision). Esim 0.7 (Korkea arvo vähentää vääriä hälytyksiä).
+        """
+        super(TverskyLoss, self).__init__()
+        self.alpha = alpha
+        self.beta = beta
+        self.smooth = smooth
 
     def forward(self, outputs_logits, targets):
+        # Varmistetaan dimension yhteensopivuus
         h_out, w_out = outputs_logits.shape[2], outputs_logits.shape[3]
         h_targ, w_targ = targets.shape[2], targets.shape[3]
         if h_out != h_targ or w_out != w_targ:
             targets = F.interpolate(targets, size=(h_out, w_out), mode='nearest')
 
-        bce_loss_raw = self.bce(outputs_logits, targets)
-        weights = torch.ones_like(targets)
-        weights[targets == 0] = self.fp_weight
-        bce_loss = (bce_loss_raw * weights).mean()
+        # Sigmoid muunnos logiteille
+        inputs = torch.sigmoid(outputs_logits)
 
-        outputs_sigmoid = torch.sigmoid(outputs_logits)
-        dice_loss = self._dice_loss(outputs_sigmoid, targets)
+        # Flattens
+        inputs = inputs.reshape(-1)
+        targets = targets.reshape(-1)
 
-        combined_loss = (self.bce_weight * bce_loss) + ((1 - self.bce_weight) * dice_loss)
-        return combined_loss
+        # Lasketaan Tversky indeksi
+        TP = (inputs * targets).sum()
+        FP = ((1 - targets) * inputs).sum()
+        FN = (targets * (1 - inputs)).sum()
+
+        tversky = (TP + self.smooth) / (TP + self.alpha * FN + self.beta * FP + self.smooth)
+
+        return 1 - tversky

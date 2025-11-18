@@ -8,28 +8,28 @@ import logging
 from tqdm import tqdm
 import torch.nn.functional as F
 
-from utils.diagnostics import save_prediction_plot
+try:
+    from torch.amp import autocast, GradScaler
+except ImportError:
+    from torch.cuda.amp import autocast, GradScaler
+
 from .attention_gates import AttentionGate
 from .augmentations import SpecAugment
-from .losses import DiceBCELoss
-from .memory import Bottleneck3D  # <--- MUUTETTU
-
+from .losses import TverskyLoss
+from .memory import Bottleneck3D
 log = logging.getLogger(__name__)
-
 
 class UNet(nn.Module):
     def __init__(self, dropout_rate):
         super(UNet, self).__init__()
         self.dropout = nn.Dropout(dropout_rate)
 
-        # Määritellään suojatut kanavat augmentaatiolle (ks. augmentations.py)
-        # Kanava 2 (lihas) suojataan, jotta malli oppii tunnistamaan sen.
         self.spec_aug = SpecAugment(
             freq_mask_prob=0.3,
             time_mask_prob=0.3,
             freq_mask_param=15,
             time_mask_param=30,
-            protected_channels=[2]  # <--- UUSI PARAMETRI: Suojaa lihaskanava (idx 2)
+            protected_channels=[2]
         )
 
         def conv_block(in_channels, out_channels):
@@ -54,20 +54,8 @@ class UNet(nn.Module):
         self.pool = nn.MaxPool2d(kernel_size=2, stride=2)
         self.e5_bottleneck_conv = conv_block(512, 1024)
 
-        # --- UUSI 3D BOTTLENECK ---
-        # Input dim 1024, Hidden 512. Output on automaattisesti 2*1024 (koska korvaa BiLSTM:n)
-        # Huom: Bottleneck3D:n output kanavat säädetään final_conv:ssa.
-        # BiLSTM antoi ulos 2 * hidden (2*512 = 1024).
-        # Meidän Bottleneck3D antaa ulos in_channels * 2 = 2048.
-        # JOTEN säädetään tässä dimensiota:
+        # --- 3D BOTTLENECK ---
         self.bottleneck_3d = Bottleneck3D(in_channels=1024, hidden_channels=512)
-        # Jos haluat täsmälleen saman dimension kuin ennen (1024), muuta Bottleneck3D:n final_conv kertoimeksi 1.
-        # Mutta Decoderin up6 odottaa sisään 1024 kanavaa.
-        # BiLSTM antoi (forward+backward) = 1024.
-        # Säädetään Bottleneck3D palauttamaan 1024 kanavaa:
-        # (Tämä vaatii pienen muutoksen memory.py:n final_conv:iin -> in_channels * 1)
-        # TAI käytämme Conv1x1 tässä palauttamaan sen 1024:ään.
-
         self.bottleneck_reducer = nn.Conv2d(2048, 1024, kernel_size=1)
 
         # --- Decoder ---
@@ -94,7 +82,7 @@ class UNet(nn.Module):
         x_cnn = x.view(b * s, c, h, w)
 
         if self.training:
-            x_cnn = self.spec_aug(x_cnn)  # Augmentaatio (nyt suojaa kanavaa 2)
+            x_cnn = self.spec_aug(x_cnn)
 
         e1 = self.e1(x_cnn)
         p1 = self.pool(e1)
@@ -106,30 +94,20 @@ class UNet(nn.Module):
         p4 = self.pool(e4)
         e5 = self.e5_bottleneck_conv(p4)
 
-        # --- 3D BOTTLENECK LOGIC ---
         _, c_enc, h_enc, w_enc = e5.shape
-        # Muutetaan muotoon: (Batch, Channels, Sequence, Height, Width)
         e5_seq = e5.view(b, s, c_enc, h_enc, w_enc).permute(0, 2, 1, 3, 4)
 
-        # Ajetaan 3D konvoluutio
-        temporal_out = self.bottleneck_3d(e5_seq)  # -> (B, 2048, S, H, W)
-
-        # Palautetaan muotoon (Batch * Sequence, Channels, Height, Width)
-        # Permute takaisin: (B, S, C, H, W) -> Reshape
+        temporal_out = self.bottleneck_3d(e5_seq)
         temporal_out = temporal_out.permute(0, 2, 1, 3, 4).contiguous()
-        temporal_out = temporal_out.view(b * s, -1, h_enc, w_enc)  # -> (B*S, 2048, H, W)
+        temporal_out = temporal_out.view(b * s, -1, h_enc, w_enc)
 
-        # Pienennetään kanavat takaisin 1024:ään, jotta dekooderi toimii
         lstm_out = self.bottleneck_reducer(temporal_out)
 
-        # --- Decoder (pysyy samana) ---
         e1_center = e1.view(b, s, 64, h, w)[:, s // 2]
         e2_center = e2.view(b, s, 128, h // 2, w // 2)[:, s // 2]
         e3_center = e3.view(b, s, 256, h // 4, w // 4)[:, s // 2]
         e4_center = e4.view(b, s, 512, h // 8, w // 8)[:, s // 2]
 
-        # Bottleneck outputista otetaan myös vain keskimmäinen (S // 2) dekooderille
-        # Koska lstm_out on (B*S, ...), puretaan se
         lstm_out_center = lstm_out.view(b, s, 1024, h_enc, w_enc)[:, s // 2]
 
         d6 = self.up6(lstm_out_center)
@@ -160,25 +138,42 @@ class UNet(nn.Module):
         return out
 
 
-# ... train_model funktio pysyy samana ...
 def train_model(model, train_loader, val_loader, optimizer_type, learning_rate, num_epochs, early_stopping_patience,
                 output_dir, fs):
-    device = torch.device('mps' if torch.backends.mps.is_available() else 'cpu')
+    # KORJAUS: Tunnistetaan laite oikein (MPS, CUDA tai CPU)
     if torch.cuda.is_available():
-        device = torch.device('cuda')
-    log.info(f"Using device: {device}")
+        device_type = 'cuda'
+    elif torch.backends.mps.is_available():
+        device_type = 'mps'
+    else:
+        device_type = 'cpu'
+
+    device = torch.device(device_type)
+    log.info(f"Using device: {device} (AMP enabled: {device_type != 'cpu'})")
     model.to(device)
 
-    # KORJAUS: fp_weight 5.0 -> 2.0 (tasapainoisempi oppiminen)
-    criterion = DiceBCELoss(bce_weight=0.5, fp_weight=2.0).to(device)
+    criterion = TverskyLoss(alpha=0.3, beta=0.7).to(device)
 
     if optimizer_type == 'Adam':
         optimizer = optim.Adam(model.parameters(), lr=learning_rate)
     else:
         optimizer = optim.Adam(model.parameters(), lr=learning_rate)
 
-        # KORJAUS: Poistettu 'verbose=True', joka aiheutti virheen
     scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=2)
+
+    # KORJAUS: Alustetaan GradScaler laitekohtaisesti.
+    # MPS:llä Scaler voi olla valinnainen, mutta PyTorch >2.0 tukee sitä 'mps'-parametrilla.
+    scaler = None
+    if device_type != 'cpu':
+        try:
+            scaler = GradScaler(device=device_type)
+        except Exception:
+            # Jos MPS GradScaler epäonnistuu, kokeillaan ilman argumenttia tai jätetään pois
+            # (CUDA:lla toimii oletuksena, MPS:llä voi vaatia 'mps' tai ei scaleria lainkaan)
+            if device_type == 'cuda':
+                scaler = GradScaler()
+            else:
+                log.warning("GradScaler init failed for MPS, trying without scaler (float16 only).")
 
     train_losses, val_losses = [], []
     best_val_loss = float('inf')
@@ -196,12 +191,25 @@ def train_model(model, train_loader, val_loader, optimizer_type, learning_rate, 
             images_seq = images_seq.to(device)
             masks_2d = masks_2d.to(device)
 
-            seg_logits = model(images_seq)
-            loss = criterion(seg_logits, masks_2d)
-
             optimizer.zero_grad()
-            loss.backward()
-            optimizer.step()
+
+            # KORJAUS: autocast ottaa nyt oikean device_typen (mps tai cuda)
+            if device_type != 'cpu':
+                with autocast(device_type=device_type):
+                    seg_logits = model(images_seq)
+                    loss = criterion(seg_logits, masks_2d)
+            else:
+                # CPU-fallback ilman autocastia
+                seg_logits = model(images_seq)
+                loss = criterion(seg_logits, masks_2d)
+
+            if scaler:
+                scaler.scale(loss).backward()
+                scaler.step(optimizer)
+                scaler.update()
+            else:
+                loss.backward()
+                optimizer.step()
 
             total_train_loss += loss.item()
             train_iterator.set_postfix(loss=loss.item())
@@ -220,15 +228,20 @@ def train_model(model, train_loader, val_loader, optimizer_type, learning_rate, 
                 images_seq = images_seq.to(device)
                 masks_2d = masks_2d.to(device)
 
-                seg_logits = model(images_seq)
-                loss = criterion(seg_logits, masks_2d)
+                if device_type != 'cpu':
+                    with autocast(device_type=device_type):
+                        seg_logits = model(images_seq)
+                        loss = criterion(seg_logits, masks_2d)
+                else:
+                    seg_logits = model(images_seq)
+                    loss = criterion(seg_logits, masks_2d)
+
                 total_val_loss += loss.item()
                 val_iterator.set_postfix(loss=loss.item())
 
         avg_val_loss = total_val_loss / len(val_loader)
         val_losses.append(avg_val_loss)
 
-        # KORJAUS: Päivitä scheduler
         scheduler.step(avg_val_loss)
 
         log.info(f"Epoch [{epoch + 1}/{num_epochs}], Avg Validation Loss: {avg_val_loss:.4f}")

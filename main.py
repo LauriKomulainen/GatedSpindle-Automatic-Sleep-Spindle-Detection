@@ -1,5 +1,6 @@
 # main.py
 
+import gc  # KORJAUS: Lisätty import
 import os
 import torch
 import matplotlib.pyplot as plt
@@ -13,7 +14,6 @@ from training_parameters import TRAINING_PARAMS, DATA_PARAMS, TEST_FAST_FRACTION
 from data_preprocess.dataset import get_dataloaders
 from UNET_model.model import UNet, train_model
 from UNET_model.evaluation_metrics import compute_event_based_metrics, find_optimal_threshold
-from utils.diagnostics import save_prediction_plot
 
 if __name__ == "__main__":
 
@@ -41,7 +41,7 @@ if __name__ == "__main__":
 
     log.info(f"---Starting {len(all_subjects)}-Fold LOSO Cross-Validation ---")
 
-    #for k in [3]:
+    # for k in [3]:
     for k in range(len(all_subjects)):
 
         test_subject_id = [all_subjects[k]]
@@ -99,7 +99,7 @@ if __name__ == "__main__":
             plt.plot(val_losses, label='Validation Loss')
             plt.title(f'Loss Progression - {fold_name}')
             plt.xlabel('Epochs')
-            plt.ylabel('Dice Loss')
+            plt.ylabel('Tversky Loss')
             plt.legend()
             loss_plot_path = os.path.join(fold_output_dir, 'loss_progression.png')
             plt.savefig(loss_plot_path, dpi=300)
@@ -112,29 +112,28 @@ if __name__ == "__main__":
         log.info(f"Computing FINAL test metrics using optimal threshold: {optimal_thresh:.2f}")
         metrics = compute_event_based_metrics(model, test_loader, threshold=optimal_thresh)
 
-        log.info(f"--- 🏁 FOLD {fold_name} COMPLETE ---")
+        log.info(f"---FOLD {fold_name} COMPLETE ---")
+
+        log.info("Cleaning up memory...")
+        del model
+        del train_loader, val_loader, test_loader
+        torch.cuda.empty_cache()
+        gc.collect()
+
         log.info(f"Test results for patient {test_subject_id[0]}:\n")
         for key, value in metrics.items():
             log.info(f"  {key}: {value:.4f}")
             all_metrics[key].append(value)
 
         log.info("Saving final prediction images from TEST data...")
-        save_prediction_plot(
-            model,
-            test_loader,
-            fold_output_dir,
-            fs=DATA_PARAMS['fs'],
-            num_to_save=5,
-            prefix="final_test"
-        )
 
     log.info("\n" + "=" * 80)
-    log.info("---FULL LOSO CROSS-VALIDATION COMPLETE ---")
+    log.info("FULL LOSO CROSS-VALIDATION COMPLETE")
     log.info(f"Final average results across all {len(all_subjects)} folds:")
 
     for key, values in all_metrics.items():
         mean = np.mean(values)
         std = np.std(values)
-        log.info(f"  Average {key}: {mean:.4f} (± {std:.4f})")
+        log.info(f"Average {key}: {mean:.4f} (± {std:.4f})")
 
     log.info(f"All results saved to directory: {output_dir}")

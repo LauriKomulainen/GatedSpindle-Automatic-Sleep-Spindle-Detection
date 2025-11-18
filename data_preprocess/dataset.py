@@ -9,6 +9,7 @@ import random
 
 log = logging.getLogger(__name__)
 
+
 class SpindleDataset(Dataset):
     def __init__(self, x_img_path, y_img_path, x_1d_path, seq_len=3):
         self.x_path = x_img_path
@@ -17,18 +18,17 @@ class SpindleDataset(Dataset):
         self.seq_len = seq_len
         self.padding = self.seq_len // 2
 
-        temp_x = np.load(x_img_path, mmap_mode='r')
-        self.length = temp_x.shape[0]
-        del temp_x
+        # Avataan mmap-objektit vain kerran
+        self.x_mmap = np.load(x_img_path, mmap_mode='r')
+        self.y_mmap = np.load(y_img_path, mmap_mode='r')
+        self.x1d_mmap = np.load(x_1d_path, mmap_mode='r')
+
+        self.length = self.x_mmap.shape[0]
 
     def __len__(self):
         return self.length
 
     def __getitem__(self, idx):
-        x_mmap = np.load(self.x_path, mmap_mode='r')
-        y_mmap = np.load(self.y_path, mmap_mode='r')
-        x1d_mmap = np.load(self.x_1d_path, mmap_mode='r')
-
         indices = []
         for i in range(self.seq_len):
             current_idx = idx - self.padding + i
@@ -38,11 +38,11 @@ class SpindleDataset(Dataset):
                 current_idx = (self.length - 1) - (current_idx - self.length)
             indices.append(current_idx)
 
-        x_seq_arrays = [x_mmap[i].astype(np.float32) for i in indices]
+        x_seq_arrays = [np.array(self.x_mmap[i], dtype=np.float32) for i in indices]
         x_img_tensor = torch.tensor(np.stack(x_seq_arrays), dtype=torch.float32)
 
-        y_img_tensor = torch.tensor(y_mmap[idx].astype(np.float32), dtype=torch.float32)
-        x_1d_tensor = torch.tensor(x1d_mmap[idx].astype(np.float32), dtype=torch.float32)
+        y_img_tensor = torch.tensor(np.array(self.y_mmap[idx], dtype=np.float32), dtype=torch.float32)
+        x_1d_tensor = torch.tensor(np.array(self.x1d_mmap[idx], dtype=np.float32), dtype=torch.float32)
 
         return x_img_tensor, y_img_tensor, x_1d_tensor
 
@@ -53,7 +53,6 @@ def get_dataloaders(processed_data_dir: str,
                     val_subject_ids: list,
                     test_subject_ids: list,
                     use_fraction: float = 1.0):
-
     log.info(f"Training data: {train_subject_ids}")
     log.info(f"Validation data: {val_subject_ids}")
     log.info(f"Test data: {test_subject_ids}")
@@ -93,10 +92,12 @@ def get_dataloaders(processed_data_dir: str,
     log.info(f"Total validation images: {len(val_ds)}")
     log.info(f"Total test images: {len(test_ds)}")
 
+    use_pin_memory = torch.cuda.is_available()
+
     common_loader_params = {
         'batch_size': batch_size,
         'num_workers': 2,
-        'pin_memory': False,
+        'pin_memory': use_pin_memory,
     }
 
     train_loader = DataLoader(train_ds, shuffle=True, **common_loader_params)
