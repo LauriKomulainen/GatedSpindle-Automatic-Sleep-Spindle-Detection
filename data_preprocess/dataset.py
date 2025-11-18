@@ -18,14 +18,16 @@ class SpindleDataset(Dataset):
     """
 
     def __init__(self, x_img_path, y_img_path, x_1d_path, seq_len=3):
-        self.x_data = np.load(x_img_path).astype(np.float32)
-        self.y_data = np.load(y_img_path).astype(np.float32)
-        self.x_1d_data = np.load(x_1d_path).astype(np.float32)
+        # KORJAUS: mmap_mode='r' pitää datan levyllä, ei lataa RAMiin
+        self.x_data = np.load(x_img_path, mmap_mode='r')
+        self.y_data = np.load(y_img_path, mmap_mode='r')
+        self.x_1d_data = np.load(x_1d_path, mmap_mode='r')
         self.seq_len = seq_len
-        self.padding = self.seq_len // 2  # 3 -> 1
+        self.padding = self.seq_len // 2
 
-        assert len(self.x_data) == len(self.y_data) == len(self.x_1d_data), "Data file lengths do not match!"
-        log.info(f"Loaded {len(self.x_data)} data triplets from {os.path.basename(x_img_path)}")
+        # Tarkistetaan pituudet lataamatta dataa
+        assert self.x_data.shape[0] == self.y_data.shape[0] == self.x_1d_data.shape[0], "Data lengths match error"
+        log.info(f"Loaded {len(self.x_data)} data triplets (mmap mode) from {os.path.basename(x_img_path)}")
 
     def __len__(self):
         return len(self.x_data)
@@ -43,13 +45,14 @@ class SpindleDataset(Dataset):
                 current_idx = (len(self.x_data) - 1) - (current_idx - len(self.x_data))
             indices.append(current_idx)
 
-        x_img_seq = [torch.from_numpy(self.x_data[i]) for i in indices]
+        # KORJAUS: np.array(...) pakottaa datan kopioinnin levyltä RAMiin tässä kohtaa.
+        # Ilman tätä PyTorch saattaa yrittää käsitellä mmap-objektia väärin.
+        x_img_seq = [torch.from_numpy(np.array(self.x_data[i], dtype=np.float32)) for i in indices]
 
         x_img_tensor = torch.stack(x_img_seq, dim=0)
 
-        # Palauta VAIN keskimmäinen maski ja 1D-signaali
-        y_img_tensor = torch.from_numpy(self.y_data[idx])
-        x_1d_tensor = torch.from_numpy(self.x_1d_data[idx])
+        y_img_tensor = torch.from_numpy(np.array(self.y_data[idx], dtype=np.float32))
+        x_1d_tensor = torch.from_numpy(np.array(self.x_1d_data[idx], dtype=np.float32))
 
         return (
             x_img_tensor,  # (S, C, H, W)
@@ -106,7 +109,7 @@ def get_dataloaders(processed_data_dir: str,
 
     common_loader_params = {
         'batch_size': batch_size,
-        'num_workers': 8,
+        'num_workers': 0,  # KORJAUS: 0 on turvallisin Macilla muistivuotojen estämiseksi.
         'pin_memory': False,
     }
 

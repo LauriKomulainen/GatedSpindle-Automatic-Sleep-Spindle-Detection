@@ -8,6 +8,7 @@ import logging
 from tqdm import tqdm
 import torch.nn.functional as F
 
+# Tarkista, että nämä importit vastaavat tiedostorakennettasi
 from utils.diagnostics import save_prediction_plot
 from .attention_gates import AttentionGate
 from .augmentations import SpecAugment
@@ -17,6 +18,7 @@ from .memory import BiConvLSTM
 log = logging.getLogger(__name__)
 
 
+# ... (UNet-luokka pysyy samana, ei muutoksia) ...
 class UNet(nn.Module):
     def __init__(self, dropout_rate):
         super(UNet, self).__init__()
@@ -51,12 +53,7 @@ class UNet(nn.Module):
         self.pool = nn.MaxPool2d(kernel_size=2, stride=2)
         self.e5_bottleneck_conv = conv_block(512, 1024)
 
-        # --- Pullonkaula (BiConvLSTM) ---
-        self.bilstm_bottleneck = BiConvLSTM(
-            input_dim=1024,
-            hidden_dim=512,
-            kernel_size=(3, 3)
-        )
+        self.bilstm_bottleneck = BiConvLSTM(input_dim=1024, hidden_dim=512, kernel_size=(3, 3))
 
         # --- Decoder ---
         self.up6 = up_conv(1024, 512)
@@ -83,7 +80,6 @@ class UNet(nn.Module):
         if self.training:
             x_cnn = self.spec_aug(x_cnn)
 
-        # --- Encoder ---
         e1 = self.e1(x_cnn);
         p1 = self.pool(e1)
         e2 = self.e2(p1);
@@ -96,48 +92,35 @@ class UNet(nn.Module):
 
         _, c_enc, h_enc, w_enc = e5.shape
         e5_seq = e5.view(b, s, c_enc, h_enc, w_enc)
-
-        # --- Bottleneck ---
         lstm_out = self.bilstm_bottleneck(e5_seq)
 
-        # --- Keskimmäiset skip-connectionit ---
         e1_center = e1.view(b, s, 64, h, w)[:, s // 2]
         e2_center = e2.view(b, s, 128, h // 2, w // 2)[:, s // 2]
         e3_center = e3.view(b, s, 256, h // 4, w // 4)[:, s // 2]
         e4_center = e4.view(b, s, 512, h // 8, w // 8)[:, s // 2]
 
-        # --- Decoder ---
-
-        # Taso 6 (H/8, W/8)
         d6 = self.up6(lstm_out)
         ag6 = self.ag6(g=d6, x=e4_center)
-        # Tässä ag6 on nyt e4_center:n kokoinen (esim. 125)
-        # ja d6 on eri kokoinen (esim. 124)
-        # -> Pakotetaan d6 ag6:n kokoiseksi
-        if d6.shape[2:] != ag6.shape[2:]:
-            d6 = F.interpolate(d6, size=ag6.shape[2:], mode='bilinear', align_corners=False)
+        if d6.shape[2:] != ag6.shape[2:]: d6 = F.interpolate(d6, size=ag6.shape[2:], mode='bilinear',
+                                                             align_corners=False)
         d6 = self.d6(torch.cat((ag6, d6), dim=1))
 
-        # Taso 7 (H/4, W/4)
         d7 = self.up7(d6)
         ag7 = self.ag7(g=d7, x=e3_center)
-        # KORJAUS TÄSSÄ:
-        if d7.shape[2:] != ag7.shape[2:]:
-            d7 = F.interpolate(d7, size=ag7.shape[2:], mode='bilinear', align_corners=False)
-        d7 = self.d7(torch.cat((ag7, d7), dim=1))  # Tämä rivi kaatui
+        if d7.shape[2:] != ag7.shape[2:]: d7 = F.interpolate(d7, size=ag7.shape[2:], mode='bilinear',
+                                                             align_corners=False)
+        d7 = self.d7(torch.cat((ag7, d7), dim=1))
 
-        # Taso 8 (H/2, W/2)
         d8 = self.up8(d7)
         ag8 = self.ag8(g=d8, x=e2_center)
-        if d8.shape[2:] != ag8.shape[2:]:
-            d8 = F.interpolate(d8, size=ag8.shape[2:], mode='bilinear', align_corners=False)
+        if d8.shape[2:] != ag8.shape[2:]: d8 = F.interpolate(d8, size=ag8.shape[2:], mode='bilinear',
+                                                             align_corners=False)
         d8 = self.d8(torch.cat((ag8, d8), dim=1))
 
-        # Taso 9 (H, W)
         d9 = self.up9(d8)
         ag9 = self.ag9(g=d9, x=e1_center)
-        if d9.shape[2:] != ag9.shape[2:]:
-            d9 = F.interpolate(d9, size=ag9.shape[2:], mode='bilinear', align_corners=False)
+        if d9.shape[2:] != ag9.shape[2:]: d9 = F.interpolate(d9, size=ag9.shape[2:], mode='bilinear',
+                                                             align_corners=False)
         d9 = self.d9(torch.cat((ag9, d9), dim=1))
 
         out = self.out_conv(d9)
@@ -152,19 +135,22 @@ def train_model(model, train_loader, val_loader, optimizer_type, learning_rate, 
     log.info(f"Using device: {device}")
     model.to(device)
 
-    criterion = DiceBCELoss(bce_weight=0.5, fp_weight=5.0).to(device)
+    # KORJAUS: fp_weight 5.0 -> 2.0 (tasapainoisempi oppiminen)
+    criterion = DiceBCELoss(bce_weight=0.5, fp_weight=2.0).to(device)
 
     if optimizer_type == 'Adam':
         optimizer = optim.Adam(model.parameters(), lr=learning_rate)
     else:
-        log.warning(f"Defaulting to Adam optimizer.")
         optimizer = optim.Adam(model.parameters(), lr=learning_rate)
+
+    # KORJAUS: Learning rate scheduler lisätty
+    scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=2, verbose=True)
 
     train_losses, val_losses = [], []
     best_val_loss = float('inf')
     patience_counter = 0
 
-    log.info(f"Starting Conv-BiLSTM-UNet training (Sequential Input)...")
+    log.info(f"Starting Conv-BiLSTM-UNet training...")
 
     for epoch in range(num_epochs):
         log.info("\n" + f"--- Epoch {epoch + 1}/{num_epochs} ---")
@@ -176,11 +162,9 @@ def train_model(model, train_loader, val_loader, optimizer_type, learning_rate, 
             images_seq = images_seq.to(device)
             masks_2d = masks_2d.to(device)
 
-            # Forward pass
             seg_logits = model(images_seq)
             loss = criterion(seg_logits, masks_2d)
 
-            # Backward pass
             optimizer.zero_grad()
             loss.backward()
             optimizer.step()
@@ -210,21 +194,22 @@ def train_model(model, train_loader, val_loader, optimizer_type, learning_rate, 
         avg_val_loss = total_val_loss / len(val_loader)
         val_losses.append(avg_val_loss)
 
+        # KORJAUS: Päivitä scheduler
+        scheduler.step(avg_val_loss)
+
         log.info(f"Epoch [{epoch + 1}/{num_epochs}], Avg Validation Loss: {avg_val_loss:.4f}")
 
-        # Early stopping
         if avg_val_loss < best_val_loss:
             best_val_loss = avg_val_loss
             patience_counter = 0
             torch.save(model.state_dict(), os.path.join(output_dir, 'unet_model_best.pth'))
-            log.info(f"Validation loss improved, saving model to: {output_dir}")
+            log.info(f"Validation loss improved, saving model.")
         else:
             patience_counter += 1
             log.info(f"Validation loss did not improve. Patience: {patience_counter}/{early_stopping_patience}")
 
         if patience_counter >= early_stopping_patience:
-            log.info(f"Early stopping triggered after {epoch + 1} epochs.")
+            log.info(f"Early stopping triggered.")
             break
 
-    log.info("Training complete.")
     return train_losses, val_losses
