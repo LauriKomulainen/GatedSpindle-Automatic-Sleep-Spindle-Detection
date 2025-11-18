@@ -1,6 +1,6 @@
 # main.py
 
-import gc  # KORJAUS: Lisätty import
+import gc
 import os
 import torch
 import matplotlib.pyplot as plt
@@ -24,11 +24,11 @@ if __name__ == "__main__":
 
     params = TRAINING_PARAMS
     if FAST_TEST_FRACTION < 1.0:
-        log.warning(f"--- RUNNING IN FAST TEST MODE (DATA FRACTION: {FAST_TEST_FRACTION}) ---")
+        log.warning(f"RUNNING IN FAST TEST MODE (DATA FRACTION: {FAST_TEST_FRACTION})")
         params['num_epochs'] = 1
         params['early_stopping_patience'] = 5
 
-    log.info("---Starting U-Net Training: Leave-One-Subject-Out (LOSO) ---")
+    log.info("Starting U-Net Training: Leave-One-Subject-Out (LOSO)")
     log.info(f"Using hyperparameters: {params}")
 
     result_dir = "model_reports"
@@ -39,7 +39,7 @@ if __name__ == "__main__":
     all_subjects = ['excerpt1', 'excerpt2', 'excerpt3', 'excerpt4', 'excerpt5', 'excerpt6']
     all_metrics = defaultdict(list)
 
-    log.info(f"---Starting {len(all_subjects)}-Fold LOSO Cross-Validation ---")
+    log.info(f"Starting {len(all_subjects)}-Fold LOSO Cross-Validation")
 
     # for k in [3]:
     for k in range(len(all_subjects)):

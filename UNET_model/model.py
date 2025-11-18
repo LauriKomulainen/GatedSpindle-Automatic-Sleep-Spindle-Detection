@@ -140,7 +140,6 @@ class UNet(nn.Module):
 
 def train_model(model, train_loader, val_loader, optimizer_type, learning_rate, num_epochs, early_stopping_patience,
                 output_dir, fs):
-    # KORJAUS: Tunnistetaan laite oikein (MPS, CUDA tai CPU)
     if torch.cuda.is_available():
         device_type = 'cuda'
     elif torch.backends.mps.is_available():
@@ -152,7 +151,7 @@ def train_model(model, train_loader, val_loader, optimizer_type, learning_rate, 
     log.info(f"Using device: {device} (AMP enabled: {device_type != 'cpu'})")
     model.to(device)
 
-    criterion = TverskyLoss(alpha=0.3, beta=0.7).to(device)
+    criterion = TverskyLoss(alpha=0.1, beta=0.9).to(device)
 
     if optimizer_type == 'Adam':
         optimizer = optim.Adam(model.parameters(), lr=learning_rate)
@@ -161,15 +160,11 @@ def train_model(model, train_loader, val_loader, optimizer_type, learning_rate, 
 
     scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=2)
 
-    # KORJAUS: Alustetaan GradScaler laitekohtaisesti.
-    # MPS:llä Scaler voi olla valinnainen, mutta PyTorch >2.0 tukee sitä 'mps'-parametrilla.
     scaler = None
     if device_type != 'cpu':
         try:
             scaler = GradScaler(device=device_type)
         except Exception:
-            # Jos MPS GradScaler epäonnistuu, kokeillaan ilman argumenttia tai jätetään pois
-            # (CUDA:lla toimii oletuksena, MPS:llä voi vaatia 'mps' tai ei scaleria lainkaan)
             if device_type == 'cuda':
                 scaler = GradScaler()
             else:
@@ -182,7 +177,7 @@ def train_model(model, train_loader, val_loader, optimizer_type, learning_rate, 
     log.info(f"Starting Conv-BiLSTM-UNet training...")
 
     for epoch in range(num_epochs):
-        log.info("\n" + f"--- Epoch {epoch + 1}/{num_epochs} ---")
+        log.info("\n" + f"Epoch {epoch + 1}/{num_epochs}")
         model.train()
         total_train_loss = 0
 
@@ -193,13 +188,11 @@ def train_model(model, train_loader, val_loader, optimizer_type, learning_rate, 
 
             optimizer.zero_grad()
 
-            # KORJAUS: autocast ottaa nyt oikean device_typen (mps tai cuda)
             if device_type != 'cpu':
                 with autocast(device_type=device_type):
                     seg_logits = model(images_seq)
                     loss = criterion(seg_logits, masks_2d)
             else:
-                # CPU-fallback ilman autocastia
                 seg_logits = model(images_seq)
                 loss = criterion(seg_logits, masks_2d)
 
