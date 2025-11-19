@@ -8,10 +8,12 @@ from tqdm import tqdm
 from typing import List, Dict, Tuple
 from training_parameters import CWT_PARAMS, METRIC_PARAMS, DATA_PARAMS
 import torch.nn.functional as F
+import gc  # <-- LISÄTTY: Garbage collection muistin hallintaan
 
 log = logging.getLogger(__name__)
 
 FIXED_BORDER_THRESH = 0.2
+
 
 def _find_events_dual_thresh(prob_1d: np.ndarray,
                              peak_thresh: float,
@@ -127,16 +129,26 @@ def compute_event_based_metrics(model, data_loader, threshold: float) -> Dict[st
 
     all_probs_list = []
     all_masks_list = []
+
+    # --- MUISTIOPTIMOITU SILMUKKA ---
     with torch.no_grad():
         for images_seq, masks_2d, _ in tqdm(data_loader, desc="1/3: Running Inference"):
             images_seq = images_seq.to(device)
             seg_logits = model(images_seq)
             outputs_2d_probs = torch.sigmoid(seg_logits)
-            all_probs_list.append(outputs_2d_probs.cpu())
-            all_masks_list.append(masks_2d.cpu())
 
-    all_probs_tensor = torch.cat(all_probs_list, dim=0)
-    all_masks_tensor = torch.cat(all_masks_list, dim=0)
+            # Tallennetaan vähemmän tilaa vievässä muodossa (float16 ja uint8)
+            all_probs_list.append(outputs_2d_probs.cpu().half())
+            all_masks_list.append(masks_2d.cpu().to(torch.uint8))
+
+    # Yhdistetään ja muutetaan takaisin float32:ksi prosessointia varten
+    all_probs_tensor = torch.cat(all_probs_list, dim=0).float()
+    all_masks_tensor = torch.cat(all_masks_list, dim=0).float()
+
+    # Siivotaan lista pois muistista heti
+    del all_probs_list, all_masks_list
+    gc.collect()
+    # -------------------------------
 
     log.info("2/3: Stitching predictions into continuous signal...")
     h_out, w_out = all_probs_tensor.shape[2], all_probs_tensor.shape[3]
@@ -144,6 +156,10 @@ def compute_event_based_metrics(model, data_loader, threshold: float) -> Dict[st
 
     stitched_prob_2d = _stitch_predictions(all_probs_tensor, step_samples)
     stitched_mask_2d = _stitch_predictions(all_masks_tensor_resized, step_samples)
+
+    # Vapautetaan raskaat tensorit heti stitchingin jälkeen
+    del all_probs_tensor, all_masks_tensor, all_masks_tensor_resized
+    gc.collect()
 
     log.info("Converting 2D stitched images to 1D time series...")
     mask_1d_true_bool = _internal_convert_2d_mask_to_1d(stitched_mask_2d.squeeze().numpy())
@@ -206,22 +222,35 @@ def find_optimal_threshold(model, val_loader) -> float:
 
     all_probs_list = []
     all_masks_list = []
+
+    # --- MUISTIOPTIMOITU SILMUKKA ---
     with torch.no_grad():
         for images_seq, masks_2d, _ in tqdm(val_loader, desc="Optimizing Threshold"):
             images_seq = images_seq.to(device)
             seg_logits = model(images_seq)
             outputs_2d_probs = torch.sigmoid(seg_logits)
-            all_probs_list.append(outputs_2d_probs.cpu())
-            all_masks_list.append(masks_2d.cpu())
 
-    all_probs_tensor = torch.cat(all_probs_list, dim=0)
-    all_masks_tensor = torch.cat(all_masks_list, dim=0)
+            # Tallennetaan vähemmän tilaa vievässä muodossa
+            all_probs_list.append(outputs_2d_probs.cpu().half())
+            all_masks_list.append(masks_2d.cpu().to(torch.uint8))
+
+    # Muutetaan takaisin float32
+    all_probs_tensor = torch.cat(all_probs_list, dim=0).float()
+    all_masks_tensor = torch.cat(all_masks_list, dim=0).float()
+
+    del all_probs_list, all_masks_list
+    gc.collect()
+    # -------------------------------
 
     h_out, w_out = all_probs_tensor.shape[2], all_probs_tensor.shape[3]
     all_masks_tensor_resized = F.interpolate(all_masks_tensor, size=(h_out, w_out), mode='nearest')
 
     stitched_prob_2d = _stitch_predictions(all_probs_tensor, step_samples)
     stitched_mask_2d = _stitch_predictions(all_masks_tensor_resized, step_samples)
+
+    # Vapautetaan muistia
+    del all_probs_tensor, all_masks_tensor, all_masks_tensor_resized
+    gc.collect()
 
     mask_1d_true_bool = _internal_convert_2d_mask_to_1d(stitched_mask_2d.squeeze().numpy())
     true_events = _find_events_dual_thresh(mask_1d_true_bool.astype(float), 0.5, 0.1, fs)  # Ground truth

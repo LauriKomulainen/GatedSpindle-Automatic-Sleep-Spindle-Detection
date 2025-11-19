@@ -1,44 +1,45 @@
 # UNET_model/memory.py
 
-import torch
 import torch.nn as nn
 
 
 class Bottleneck3D(nn.Module):
     """
-    Korvaa hitaan BiConvLSTM:n nopealla 3D-konvoluutiolla.
-    Käsittelee aikasarjan (S=3) yhtenä blokkina.
+    Lightweight Bottleneck (Kevytversio).
+
+    Alkuperäinen Conv3d(3x3x3) on korvattu kevyemmällä Conv3d(3x1x1) -operaatiolla.
+    Tämä keskittyy sekoittamaan tietoa vain AIKADIMENSION (Sequence) yli,
+    jättäen spatiaaliset piirteet (H, W) rauhaan, koska Encoder hoiti ne jo.
+
+    Tämä vähentää parametreja ja estää ylisovitusta (Overfitting).
     """
 
     def __init__(self, in_channels, hidden_channels):
         super(Bottleneck3D, self).__init__()
 
-        # Conv3d odottaa inputtia: (N, C, D, H, W), missä D on aika (sequence length)
-        # Käytämme kernel_size=(3, 3, 3), jotta malli näkee menneisyyden, nykyhetken ja tulevaisuuden.
-        self.conv1 = nn.Conv3d(
+        reduced_channels = hidden_channels // 2
+
+        self.reduce_conv = nn.Conv3d(
             in_channels,
-            hidden_channels,
-            kernel_size=(3, 3, 3),
-            padding=(1, 1, 1),  # Säilyttää dimension (S=3 pysyy 3:na)
+            reduced_channels,
+            kernel_size=1,
             bias=False
         )
-        self.bn1 = nn.BatchNorm3d(hidden_channels)
+        self.bn_reduce = nn.BatchNorm3d(reduced_channels)
+
+        self.conv_time = nn.Conv3d(
+            reduced_channels,
+            reduced_channels,
+            kernel_size=(3, 1, 1),
+            padding=(1, 0, 0),
+            bias=False
+        )
+        self.bn_time = nn.BatchNorm3d(reduced_channels)
         self.relu = nn.ReLU(inplace=True)
 
-        self.conv2 = nn.Conv3d(
-            hidden_channels,
-            hidden_channels,  # Pidetään kanavat samana
-            kernel_size=(3, 3, 3),
-            padding=(1, 1, 1),
-            bias=False
-        )
-        self.bn2 = nn.BatchNorm3d(hidden_channels)
-
-        # 1x1x1 konvoluutio sovittamaan kanavamäärä takaisin alkuperäiseen,
-        # jos hidden_channels != in_channels tai haluamme sekoittaa piirteitä.
-        self.final_conv = nn.Conv3d(
-            hidden_channels,
-            in_channels * 2,  # Tuplataan kanavat kuten BiLSTM teki (forward+backward)
+        self.expand_conv = nn.Conv3d(
+            reduced_channels,
+            in_channels * 2,
             kernel_size=1,
             bias=False
         )
@@ -47,18 +48,15 @@ class Bottleneck3D(nn.Module):
         """
         Input: (Batch, Channels, Sequence, Height, Width)
         """
-        # Residual connection
-        identity = x
 
-        out = self.conv1(x)
-        out = self.bn1(out)
+        out = self.reduce_conv(x)
+        out = self.bn_reduce(out)
         out = self.relu(out)
 
-        out = self.conv2(out)
-        out = self.bn2(out)
+        out = self.conv_time(out)
+        out = self.bn_time(out)
         out = self.relu(out)
 
-        # Palautetaan muoto vastaamaan BiConvLSTM:n outputtia (tuplatut kanavat)
-        out = self.final_conv(out)
+        out = self.expand_conv(out)
 
         return out

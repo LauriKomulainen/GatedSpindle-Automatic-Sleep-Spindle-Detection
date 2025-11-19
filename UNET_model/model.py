@@ -151,12 +151,14 @@ def train_model(model, train_loader, val_loader, optimizer_type, learning_rate, 
     log.info(f"Using device: {device} (AMP enabled: {device_type != 'cpu'})")
     model.to(device)
 
+    # MUUTOS: Alpha 0.7 painottaa Recallia (vähemmän false negativeja)
     criterion = TverskyLoss(alpha=0.3, beta=0.7).to(device)
 
+    # MUUTOS: weight_decay=1e-4 lisätty estämään ylisovitusta
     if optimizer_type == 'Adam':
-        optimizer = optim.Adam(model.parameters(), lr=learning_rate)
+        optimizer = optim.Adam(model.parameters(), lr=learning_rate, weight_decay=1e-4)
     else:
-        optimizer = optim.Adam(model.parameters(), lr=learning_rate)
+        optimizer = optim.Adam(model.parameters(), lr=learning_rate, weight_decay=1e-4)
 
     scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=2)
 
