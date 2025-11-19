@@ -151,7 +151,7 @@ def train_model(model, train_loader, val_loader, optimizer_type, learning_rate, 
     log.info(f"Using device: {device} (AMP enabled: {device_type != 'cpu'})")
     model.to(device)
 
-    criterion = TverskyLoss(alpha=0.1, beta=0.9).to(device)
+    criterion = TverskyLoss(alpha=0.3, beta=0.7).to(device)
 
     if optimizer_type == 'Adam':
         optimizer = optim.Adam(model.parameters(), lr=learning_rate)
