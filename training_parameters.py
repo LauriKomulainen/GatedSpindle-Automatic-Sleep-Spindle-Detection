@@ -11,7 +11,7 @@ TRAINING_PARAMS = {
     'dropout_rate': 0.4,
     'optimizer_type': 'Adam',
     'num_epochs': 30,  # Max epochs to run
-    'early_stopping_patience': 7  # How long to wait for improvement
+    'early_stopping_patience': 6  # How long to wait for improvement
 }
 
 # --- Data & Preprocessing Parameters ---
@@ -37,7 +37,7 @@ METRIC_PARAMS = {
     'spindle_freq_low': 11.0,  # Start frequency for defining a spindle
     'spindle_freq_high': 16.0,  # End frequency for defining a spindle
     'iou_threshold': 0.2,  # 20% overlap = True Positive
-    'min_duration_sec': 0.5,  # Min duration for a prediction to be valid
+    'min_duration_sec': 0.4,  # Min duration for a prediction to be valid
     'max_duration_sec': 3.0  # Max duration for a prediction to be valid
 }
 

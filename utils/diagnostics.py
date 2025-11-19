@@ -19,7 +19,7 @@ from data_preprocess.cwt_transform import (
 def save_diagnostic_plot(
         signal_1d: np.ndarray,
         mask_1d: np.ndarray,
-        image_3c: np.ndarray,  # <--- Tämä on nyt (3, H, W)
+        image_3c: np.ndarray,
         mask_2d: np.ndarray,
         fs: float,
         save_path: Path
@@ -29,7 +29,6 @@ def save_diagnostic_plot(
     Näyttää 1D-signaalin, 3 CWT-kanavaa ja 2D-maskin.
     """
     try:
-        # Pura kanavat
         image_ch0 = np.squeeze(image_3c[0])
         image_ch1 = np.squeeze(image_3c[1])
         image_ch2 = np.squeeze(image_3c[2])
@@ -66,11 +65,12 @@ def save_diagnostic_plot(
         ax2.set_ylabel("Frequency (Hz)")
 
         ax3.imshow(image_ch1, aspect='auto', origin='lower', cmap='viridis', extent=cwt_extent)
-        ax3.set_title("3. Model Input: Channel 1 (Delta Context 1-4 Hz)")
+        ax3.set_title("3. Model Input: Channel 1 (Delta Context 0.5-4 Hz)")
         ax3.set_ylabel("Frequency (Hz)")
 
+        # KORJAUS: Päivitä otsikko näyttämään ALPHA (8-12 Hz)
         ax4.imshow(image_ch2, aspect='auto', origin='lower', cmap='hot', extent=cwt_extent)
-        ax4.set_title("4. Model Input: Channel 2 (Muscle Context 20-30 Hz)")
+        ax4.set_title("4. Model Input: Channel 2 (Alpha Context 8.0-12.0 Hz)")
         ax4.set_ylabel("Frequency (Hz)")
 
         ax5.imshow(mask_2d, aspect='auto', origin='lower', cmap='gray', extent=cwt_extent)

@@ -41,7 +41,7 @@ if __name__ == "__main__":
 
     log.info(f"Starting {len(all_subjects)}-Fold LOSO Cross-Validation")
 
-    # for k in [3]:
+    #for k in [3]:
     for k in range(len(all_subjects)):
 
         test_subject_id = [all_subjects[k]]
