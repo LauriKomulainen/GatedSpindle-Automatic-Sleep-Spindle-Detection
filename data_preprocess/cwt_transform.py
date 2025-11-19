@@ -26,14 +26,12 @@ CONTEXT_2_FREQ_LOW = 8.0
 CONTEXT_2_FREQ_HIGH = 12.0
 
 
+# data_preprocess/cwt_transform.py - Ehdotettu muutos
 def _normalize_channel(channel_data: np.ndarray) -> np.ndarray:
-    """
-    KORJATTU: Ei enää pakota dataa 0-1 välille ikkunakohtaisesti.
-    Tämä säilyttää hiljaiset jaksot hiljaisina.
-    """
-    SCALING_FACTOR = 10.0
-    return np.clip(channel_data / SCALING_FACTOR, 0, 5.0).astype(np.float32)
+    robust_max = np.percentile(channel_data, 99)
+    if robust_max == 0: return channel_data
 
+    return np.clip(channel_data / robust_max, 0, 1.0).astype(np.float32)
 
 def _create_cwt_image_3channel(signal_1d: np.ndarray, fs: float) -> np.ndarray:
     image_shape = (CWT_FREQ_BINS, len(signal_1d))

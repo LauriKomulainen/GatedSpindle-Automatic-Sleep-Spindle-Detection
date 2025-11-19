@@ -10,10 +10,10 @@ from datetime import datetime
 from collections import defaultdict
 
 from utils.logger import setup_logging
-from training_parameters import TRAINING_PARAMS, DATA_PARAMS, TEST_FAST_FRACTION
 from data_preprocess.dataset import get_dataloaders
 from UNET_model.model import UNet, train_model
 from UNET_model.evaluation_metrics import compute_event_based_metrics, find_optimal_threshold
+from training_parameters import TRAINING_PARAMS, DATA_PARAMS, TEST_FAST_FRACTION, CV_CONFIG
 
 if __name__ == "__main__":
 
@@ -39,17 +39,21 @@ if __name__ == "__main__":
     all_subjects = ['excerpt1', 'excerpt2', 'excerpt3', 'excerpt4', 'excerpt5', 'excerpt6']
     all_metrics = defaultdict(list)
 
-    log.info(f"Starting {len(all_subjects)}-Fold LOSO Cross-Validation")
+    selected_folds = CV_CONFIG['folds_to_run']
 
-    #for k in [3]:
-    for k in range(len(all_subjects)):
+    if selected_folds is None:
+        folds_to_iterate = range(len(all_subjects))
+        log.info(f"Starting ALL {len(all_subjects)}-Fold LOSO Cross-Validation")
+    else:
+        folds_to_iterate = selected_folds
+        log.info(f"Starting SPECIFIC folds only: {folds_to_iterate}")
 
+    for k in folds_to_iterate:
         test_subject_id = [all_subjects[k]]
         val_subject_id = [all_subjects[(k + 1) % len(all_subjects)]]
         train_subject_ids = [s for s in all_subjects if s != test_subject_id[0] and s != val_subject_id[0]]
 
         fold_name = f"Fold_{k + 1}_(Test={test_subject_id[0]})"
-        log.info(f"\n" + "=" * 80)
         log.info(f"STARTING FOLD: {fold_name}")
         log.info("=" * 80)
 
@@ -109,7 +113,7 @@ if __name__ == "__main__":
         log.info("Finding optimal decision threshold using validation data...")
         optimal_thresh = find_optimal_threshold(model, val_loader)
 
-        log.info(f"Computing FINAL test metrics using optimal threshold: {optimal_thresh:.2f}")
+        log.info(f"Computing final test metrics using optimal threshold: {optimal_thresh:.2f}")
         metrics = compute_event_based_metrics(model, test_loader, threshold=optimal_thresh)
 
         log.info(f"---FOLD {fold_name} COMPLETE ---")
@@ -127,7 +131,6 @@ if __name__ == "__main__":
 
         log.info("Saving final prediction images from TEST data...")
 
-    log.info("\n" + "=" * 80)
     log.info("FULL LOSO CROSS-VALIDATION COMPLETE")
     log.info(f"Final average results across all {len(all_subjects)} folds:")
 

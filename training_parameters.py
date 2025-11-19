@@ -14,6 +14,13 @@ TRAINING_PARAMS = {
     'early_stopping_patience': 6  # How long to wait for improvement
 }
 
+CV_CONFIG = {
+    # 'folds_to_run': None,      <-- run everything
+    # 'folds_to_run': [3],       <-- run only Excerpt 4 (indeksi 3)
+    # 'folds_to_run': [1, 3],    <-- run 2 ja Excerpt 4
+    'folds_to_run': [3]
+}
+
 # --- Data & Preprocessing Parameters ---
 DATA_PARAMS = {
     'fs': 100.0,  # Target sample rate (all data will be resampled to this)

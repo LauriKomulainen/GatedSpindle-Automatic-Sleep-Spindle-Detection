@@ -13,67 +13,44 @@ log = logging.getLogger(__name__)
 
 FIXED_BORDER_THRESH = 0.2
 
-
-# --- TÄMÄ FUNKTIO ON NYT OPTIMOITU ---
 def _find_events_dual_thresh(prob_1d: np.ndarray,
                              peak_thresh: float,
                              border_thresh: float,
                              fs: float) -> List[Tuple[int, int]]:
-    """
-    Etsii tapahtumat 1D-todennäköisyyssarjasta käyttäen kaksoiskynnystä.
-    TÄMÄ ON NOPEA, VEKTORISOITU TOTEUTUS.
-    """
     min_samples = METRIC_PARAMS['min_duration_sec'] * fs
     max_samples = METRIC_PARAMS['max_duration_sec'] * fs
 
-    # 1. Etsi KAIKKI alueet, jotka ylittävät MATALAN kynnyksen (border_thresh)
-    # Tämä määrittelee tapahtumien maksimirajat.
     border_mask = prob_1d > border_thresh
     labeled_borders, num_border_regions = label(border_mask)
 
     if num_border_regions == 0:
         return []
 
-    # 2. Etsi KAIKKI pisteet, jotka ylittävät KORKEAN kynnyksen (peak_thresh)
-    # Nämä ovat "ytimiä", jotka validoivat tapahtuman.
     peak_mask = prob_1d > peak_thresh
-
-    # 3. Selvitä, mitkä matalan kynnyksen alueet sisältävät vähintään yhden ytimen
-    # 'labels_of_peaks' sisältää region-numeron jokaiselle peak-pisteelle
     labels_of_peaks = labeled_borders[peak_mask]
-
-    # 'valid_region_labels' on lista niistä region-numeroista (esim. 1, 2, 5...),
-    # jotka sisälsivät vähintään yhden peak-pisteen.
     valid_region_labels = np.unique(labels_of_peaks[labels_of_peaks > 0])
 
     if len(valid_region_labels) == 0:
         return []
 
-    # 4. Etsi validoitujen alueiden tarkat rajat (start/end)
-    # find_objects palauttaa listan slice-objekteja.
     valid_slices = find_objects(labeled_borders)
 
     events = []
     for region_label in valid_region_labels:
-        # Hae region-numeroa vastaava slice (indeksi on 0-pohjainen)
         s = valid_slices[region_label - 1]
-        start, end = s[0].start, s[0].stop  # 'stop' on eksklusiivinen
+        start, end = s[0].start, s[0].stop
 
-        # 5. Suodata keston mukaan
         duration_samples = end - start
 
         if min_samples <= duration_samples <= max_samples:
-            # Muunna inklusiiviseen muotoon (alku, loppu)
             events.append((start, end - 1))
 
-    # Varmuuden vuoksi, jos alueet olisivat epäjärjestyksessä
     events.sort(key=lambda x: x[0])
 
     return events
 
 
 def _internal_convert_2d_mask_to_1d(mask_2d: np.ndarray) -> np.ndarray:
-    """Muuntaa 2D CWT-maskin 1D-aikasarjaksi (boolean). (Pysyy samana)"""
     frequencies = np.linspace(CWT_PARAMS['freq_low'], CWT_PARAMS['freq_high'], CWT_PARAMS['freq_bins'])
     y_indices = np.where(
         (frequencies >= METRIC_PARAMS['spindle_freq_low']) &
@@ -86,7 +63,6 @@ def _internal_convert_2d_mask_to_1d(mask_2d: np.ndarray) -> np.ndarray:
 
 
 def _internal_convert_2d_prob_to_1d(prob_2d: np.ndarray) -> np.ndarray:
-    """Muuntaa 2D CWT-todennäköisyyskartan 1D-todennäköisyyssarjaksi. (Pysyy samana)"""
     frequencies = np.linspace(CWT_PARAMS['freq_low'], CWT_PARAMS['freq_high'], CWT_PARAMS['freq_bins'])
     y_indices = np.where(
         (frequencies >= METRIC_PARAMS['spindle_freq_low']) &
@@ -101,7 +77,6 @@ def _internal_convert_2d_prob_to_1d(prob_2d: np.ndarray) -> np.ndarray:
 
 
 def _calculate_iou(event1: Tuple[int, int], event2: Tuple[int, int]) -> float:
-    """Laskee Intersection over Union (IoU). (Pysyy samana)"""
     start1, end1 = event1
     start2, end2 = event2
     intersection_start = max(start1, start2)
@@ -112,16 +87,13 @@ def _calculate_iou(event1: Tuple[int, int], event2: Tuple[int, int]) -> float:
 
 
 def _stitch_predictions(all_preds: torch.Tensor, step_samples: int) -> torch.Tensor:
-    """Ompelee ennusteet yhteen."""
     num_windows, _, height, window_len = all_preds.shape
     all_preds = all_preds.cpu().float()
     final_len = (num_windows - 1) * step_samples + window_len
     stitched_sum = torch.zeros((1, 1, height, final_len), dtype=torch.float32)
     stitched_weights = torch.zeros((1, 1, height, final_len), dtype=torch.float32)
 
-    # KORJAUS: Tarkista dimensiot! Ikkunointi tapahtuu vain ajan (viimeinen dim) yli.
     window_weights_1d = torch.hann_window(window_len, periodic=False)
-    # Tämän pitää olla (1, 1, 1, window_len)
     window_weights = window_weights_1d.view(1, 1, 1, window_len)
 
     log.debug(f"Stitching {num_windows} windows. Final length: {final_len} samples.")
@@ -136,9 +108,6 @@ def _stitch_predictions(all_preds: torch.Tensor, step_samples: int) -> torch.Ten
 
 
 def compute_event_based_metrics(model, data_loader, threshold: float) -> Dict[str, float]:
-    """
-    Laskee metriikat TAPAHTUMAPOHJAISESTI.
-    """
     device = torch.device('mps' if torch.backends.mps.is_available() else 'cpu')
     if torch.cuda.is_available():
         device = torch.device('cuda')
@@ -180,10 +149,7 @@ def compute_event_based_metrics(model, data_loader, threshold: float) -> Dict[st
     mask_1d_true_bool = _internal_convert_2d_mask_to_1d(stitched_mask_2d.squeeze().numpy())
     prob_1d_pred = _internal_convert_2d_prob_to_1d(stitched_prob_2d.squeeze().numpy())
 
-    # Etsi tapahtumat
-    # Ground truth aina 0.5 kynnyksellä
     true_events = _find_events_dual_thresh(mask_1d_true_bool.astype(float), 0.5, 0.1, fs)
-    # Ennusteet optimoidulla kynnyksellä ja tiukemmalla reunakynnyksellä (0.2)
     pred_events = _find_events_dual_thresh(prob_1d_pred, peak_thresh, border_thresh, fs)
 
     log.info(f"3/3: Comparing events... Found {len(true_events)} true events and {len(pred_events)} predicted events.")
@@ -224,12 +190,7 @@ def compute_event_based_metrics(model, data_loader, threshold: float) -> Dict[st
 
 
 def find_optimal_threshold(model, val_loader) -> float:
-    """
-    Etsii parhaan 'peak_thresh' -kynnysarvon.
-    """
     log.info(f"Finding optimal PEAK threshold (using fixed border thresh: {FIXED_BORDER_THRESH})...")
-
-    # KORJAUKSEN JÄLKEEN: Hakee laitteen ja siirtää mallin sille
     if torch.cuda.is_available():
         device = torch.device('cuda')
     elif torch.backends.mps.is_available():
@@ -262,7 +223,6 @@ def find_optimal_threshold(model, val_loader) -> float:
     stitched_prob_2d = _stitch_predictions(all_probs_tensor, step_samples)
     stitched_mask_2d = _stitch_predictions(all_masks_tensor_resized, step_samples)
 
-    # VALMISTELEE 1D-SARJAT KERRAN
     mask_1d_true_bool = _internal_convert_2d_mask_to_1d(stitched_mask_2d.squeeze().numpy())
     true_events = _find_events_dual_thresh(mask_1d_true_bool.astype(float), 0.5, 0.1, fs)  # Ground truth
 

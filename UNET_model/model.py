@@ -174,10 +174,10 @@ def train_model(model, train_loader, val_loader, optimizer_type, learning_rate, 
     best_val_loss = float('inf')
     patience_counter = 0
 
-    log.info(f"Starting Conv-BiLSTM-UNet training...")
+    log.info(f"Starting UNet (3D-CNN Bottleneck) training...")
 
     for epoch in range(num_epochs):
-        log.info("\n" + f"Epoch {epoch + 1}/{num_epochs}")
+        log.info(f"Epoch {epoch + 1}/{num_epochs}")
         model.train()
         total_train_loss = 0
 
@@ -211,7 +211,6 @@ def train_model(model, train_loader, val_loader, optimizer_type, learning_rate, 
         train_losses.append(avg_train_loss)
         log.info(f"Epoch [{epoch + 1}/{num_epochs}], Avg Training Loss: {avg_train_loss:.4f}")
 
-        # --- Validointi ---
         model.eval()
         total_val_loss = 0
 

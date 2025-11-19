@@ -28,22 +28,28 @@ def segment_data(raw, window_sec: float, overlap_sec: float):
     step_samples = window_samples - overlap_samples
     signal = raw.get_data()[0]
 
-    mask = np.zeros_like(signal, dtype=np.int32)
+    vote_mask = np.zeros_like(signal, dtype=np.float32)
+
     for annot in raw.annotations:
         if 'spindle' in annot['description']:
             start_sample = int(annot['onset'] * fs)
             end_sample = int(start_sample + (annot['duration'] * fs))
-            if end_sample < len(mask):
-                mask[start_sample:end_sample] = 1
-    log.info(f"Created mask with {np.sum(mask)} spindle samples from {len(raw.annotations)} annotations.")
+            end_sample = min(end_sample, len(vote_mask))
+
+            if start_sample < end_sample:
+                vote_mask[start_sample:end_sample] += 1.0
+
+    final_mask = np.clip(vote_mask / 2.0, 0.0, 1.0).astype(np.float32)
+
+    log.info(f"Created SOFT LABEL mask. Values: {np.unique(final_mask)}")
 
     all_windows, all_masks = [], []
     for start in range(0, len(signal) - window_samples, step_samples):
         end = start + window_samples
-        all_windows.append(signal[start:end])
-        all_masks.append(mask[start:end])
+        if end <= len(signal):
+            all_windows.append(signal[start:end])
+            all_masks.append(final_mask[start:end])
 
-    log.info(f"Segmented signal into {len(all_windows)} windows ({window_sec}s, {overlap_sec}s overlap).")
     return np.array(all_windows), np.array(all_masks)
 
 
