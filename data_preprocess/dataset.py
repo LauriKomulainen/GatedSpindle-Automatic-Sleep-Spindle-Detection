@@ -92,12 +92,11 @@ def get_dataloaders(processed_data_dir: str,
     log.info(f"Total validation images: {len(val_ds)}")
     log.info(f"Total test images: {len(test_ds)}")
 
-    use_pin_memory = torch.cuda.is_available()
 
     common_loader_params = {
         'batch_size': batch_size,
-        'num_workers': 2,
-        'pin_memory': use_pin_memory,
+        'num_workers': 0,
+        'pin_memory': True,
     }
 
     train_loader = DataLoader(train_ds, shuffle=True, **common_loader_params)

@@ -10,7 +10,7 @@ TRAINING_PARAMS = {
     'learning_rate': 1e-4,
     'dropout_rate': 0.4,
     'optimizer_type': 'Adam',
-    'num_epochs': 1,  # Max epochs to run
+    'num_epochs': 10,  # Max epochs to run
     'early_stopping_patience': 6  # How long to wait for improvement
 }
 
