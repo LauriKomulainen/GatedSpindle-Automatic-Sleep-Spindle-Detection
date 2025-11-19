@@ -6,7 +6,7 @@ import torch.nn.functional as F
 
 
 class TverskyLoss(nn.Module):
-    def __init__(self, alpha=0.3, beta=0.7, smooth=1.0):
+    def __init__(self, alpha=0.5, beta=0.5, smooth=1.0):
         """
         Tversky Loss F1-scoren optimointiin ja FP-arvojen vähentämiseen.
         alpha: Paino False Negativeille (Recall). Esim 0.3.

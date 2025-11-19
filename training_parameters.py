@@ -7,8 +7,8 @@ Central configuration file for all training hyperparameters and data settings.
 # --- Training Hyperparameters ---
 TRAINING_PARAMS = {
     'batch_size': 16,
-    'learning_rate': 1e-4,
-    'dropout_rate': 0.4,
+    'learning_rate': 1e-3,
+    'dropout_rate': 0.2,
     'optimizer_type': 'Adam',
     'num_epochs': 10,  # Max epochs to run
     'early_stopping_patience': 6  # How long to wait for improvement

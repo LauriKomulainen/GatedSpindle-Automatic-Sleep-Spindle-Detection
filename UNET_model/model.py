@@ -17,7 +17,9 @@ from .attention_gates import AttentionGate
 from .augmentations import SpecAugment
 from .losses import TverskyLoss
 from .memory import Bottleneck3D
+
 log = logging.getLogger(__name__)
+
 
 class UNet(nn.Module):
     def __init__(self, dropout_rate):
@@ -151,10 +153,14 @@ def train_model(model, train_loader, val_loader, optimizer_type, learning_rate, 
     log.info(f"Using device: {device} (AMP enabled: {device_type != 'cpu'})")
     model.to(device)
 
-    # MUUTOS: Alpha 0.7 painottaa Recallia (vähemmän false negativeja)
-    criterion = TverskyLoss(alpha=0.3, beta=0.7).to(device)
+    # --- HYBRID LOSS START ---
+    # 1. BCEWithLogitsLoss tuo vakautta ja oppii taustan nopeasti
+    criterion_bce = nn.BCEWithLogitsLoss().to(device)
 
-    # MUUTOS: weight_decay=1e-4 lisätty estämään ylisovitusta
+    # 2. TverskyLoss (alpha=0.5, beta=0.5 -> Dice) tarkentaa sukkuloihin
+    criterion_tversky = TverskyLoss(alpha=0.5, beta=0.5).to(device)
+    # --- HYBRID LOSS END ---
+
     if optimizer_type == 'Adam':
         optimizer = optim.Adam(model.parameters(), lr=learning_rate, weight_decay=1e-4)
     else:
@@ -176,7 +182,7 @@ def train_model(model, train_loader, val_loader, optimizer_type, learning_rate, 
     best_val_loss = float('inf')
     patience_counter = 0
 
-    log.info(f"Starting UNet (3D-CNN Bottleneck) training...")
+    log.info(f"Starting UNet (3D-CNN Bottleneck) training with Hybrid Loss...")
 
     for epoch in range(num_epochs):
         log.info(f"Epoch {epoch + 1}/{num_epochs}")
@@ -193,10 +199,16 @@ def train_model(model, train_loader, val_loader, optimizer_type, learning_rate, 
             if device_type != 'cpu':
                 with autocast(device_type=device_type):
                     seg_logits = model(images_seq)
-                    loss = criterion(seg_logits, masks_2d)
+                    # Hybrid Loss laskenta
+                    loss_bce = criterion_bce(seg_logits, masks_2d)
+                    loss_tversky = criterion_tversky(seg_logits, masks_2d)
+                    loss = 0.5 * loss_bce + 0.5 * loss_tversky
             else:
                 seg_logits = model(images_seq)
-                loss = criterion(seg_logits, masks_2d)
+                # Hybrid Loss laskenta
+                loss_bce = criterion_bce(seg_logits, masks_2d)
+                loss_tversky = criterion_tversky(seg_logits, masks_2d)
+                loss = 0.5 * loss_bce + 0.5 * loss_tversky
 
             if scaler:
                 scaler.scale(loss).backward()
@@ -225,10 +237,14 @@ def train_model(model, train_loader, val_loader, optimizer_type, learning_rate, 
                 if device_type != 'cpu':
                     with autocast(device_type=device_type):
                         seg_logits = model(images_seq)
-                        loss = criterion(seg_logits, masks_2d)
+                        loss_bce = criterion_bce(seg_logits, masks_2d)
+                        loss_tversky = criterion_tversky(seg_logits, masks_2d)
+                        loss = 0.5 * loss_bce + 0.5 * loss_tversky
                 else:
                     seg_logits = model(images_seq)
-                    loss = criterion(seg_logits, masks_2d)
+                    loss_bce = criterion_bce(seg_logits, masks_2d)
+                    loss_tversky = criterion_tversky(seg_logits, masks_2d)
+                    loss = 0.5 * loss_bce + 0.5 * loss_tversky
 
                 total_val_loss += loss.item()
                 val_iterator.set_postfix(loss=loss.item())
