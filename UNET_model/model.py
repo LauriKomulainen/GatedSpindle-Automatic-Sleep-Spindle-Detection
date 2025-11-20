@@ -161,7 +161,7 @@ def train_model(model, train_loader, val_loader, optimizer_type, learning_rate, 
     criterion_bce = nn.BCEWithLogitsLoss(pos_weight=pos_weight).to(device)
 
     # 2. TverskyLoss: Focus on Recall (alpha=0.8) instead of Precision
-    criterion_tversky = TverskyLoss(alpha=0.6, beta=0.4).to(device)
+    criterion_tversky = TverskyLoss(alpha=0.4, beta=0.6).to(device)
     # -----------------------
 
     if optimizer_type == 'Adam':

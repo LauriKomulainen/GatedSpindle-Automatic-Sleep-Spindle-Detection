@@ -21,9 +21,8 @@ SPINDLE_FREQ_HIGH = METRIC_PARAMS['spindle_freq_high']
 DELTA_FREQ_LOW = 0.5
 DELTA_FREQ_HIGH = 4.0
 
-# VAIHDETTU: Muscle (20-30Hz) -> Alpha (8-12Hz) vähentämään vääriä positiivisia
-CONTEXT_2_FREQ_LOW = 8.0
-CONTEXT_2_FREQ_HIGH = 12.0
+CONTEXT_2_FREQ_LOW = 4.0
+CONTEXT_2_FREQ_HIGH = 10.0
 
 
 # data_preprocess/cwt_transform.py - Ehdotettu muutos
