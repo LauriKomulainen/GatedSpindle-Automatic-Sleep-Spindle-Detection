@@ -28,9 +28,10 @@ CONTEXT_2_FREQ_HIGH = 12.0
 
 # data_preprocess/cwt_transform.py - Ehdotettu muutos
 def _normalize_channel(channel_data: np.ndarray) -> np.ndarray:
+    # VAIHDA 95 -> 99
     robust_max = np.percentile(channel_data, 99)
-    if robust_max == 0: return channel_data
 
+    if robust_max == 0: return channel_data
     return np.clip(channel_data / robust_max, 0, 1.0).astype(np.float32)
 
 def _create_cwt_image_3channel(signal_1d: np.ndarray, fs: float) -> np.ndarray:
@@ -84,11 +85,12 @@ def _create_cwt_mask(mask_1d: np.ndarray, image_shape: tuple) -> np.ndarray:
     (height, width) = image_shape
     mask_2d = np.zeros(image_shape, dtype=np.float32)
     frequencies = np.linspace(CWT_FREQ_LOW, CWT_FREQ_HIGH, CWT_FREQ_BINS)
+
     y_indices = np.where(
         (frequencies >= SPINDLE_FREQ_LOW) &
         (frequencies <= SPINDLE_FREQ_HIGH)
     )[0]
-    x_indices = np.where(mask_1d == 1)[0]
+    x_indices = np.where(mask_1d > 0)[0]  # <-- Tämä hyväksyy kaikki sukkulat
 
     if len(y_indices) > 0 and len(x_indices) > 0:
         mask_2d[np.ix_(y_indices, x_indices)] = 1.0

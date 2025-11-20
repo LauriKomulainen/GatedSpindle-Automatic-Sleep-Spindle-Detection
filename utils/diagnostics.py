@@ -51,7 +51,7 @@ def save_diagnostic_plot(
         ax1.fill_between(time_axis,
                          ax1.get_ylim()[0],
                          ax1.get_ylim()[1],
-                         where=(mask_1d == 1),
+                         where=(mask_1d > 0),
                          color='lime',
                          alpha=0.4,
                          label='Ground Truth Spindle')

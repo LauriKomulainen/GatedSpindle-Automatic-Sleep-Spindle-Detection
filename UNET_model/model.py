@@ -140,6 +140,8 @@ class UNet(nn.Module):
         return out
 
 
+# UNET_model/model.py
+
 def train_model(model, train_loader, val_loader, optimizer_type, learning_rate, num_epochs, early_stopping_patience,
                 output_dir, fs):
     if torch.cuda.is_available():
@@ -153,13 +155,14 @@ def train_model(model, train_loader, val_loader, optimizer_type, learning_rate, 
     log.info(f"Using device: {device} (AMP enabled: {device_type != 'cpu'})")
     model.to(device)
 
-    # --- HYBRID LOSS START ---
-    # 1. BCEWithLogitsLoss tuo vakautta ja oppii taustan nopeasti
-    criterion_bce = nn.BCEWithLogitsLoss().to(device)
+    # --- HYBRID LOSS FIX ---
+    # 1. Weighted BCE: Penalize missing a spindle 10x more than missing background
+    pos_weight = torch.tensor([5.0]).to(device)
+    criterion_bce = nn.BCEWithLogitsLoss(pos_weight=pos_weight).to(device)
 
-    # 2. TverskyLoss (alpha=0.5, beta=0.5 -> Dice) tarkentaa sukkuloihin
-    criterion_tversky = TverskyLoss(alpha=0.5, beta=0.5).to(device)
-    # --- HYBRID LOSS END ---
+    # 2. TverskyLoss: Focus on Recall (alpha=0.8) instead of Precision
+    criterion_tversky = TverskyLoss(alpha=0.6, beta=0.4).to(device)
+    # -----------------------
 
     if optimizer_type == 'Adam':
         optimizer = optim.Adam(model.parameters(), lr=learning_rate, weight_decay=1e-4)
@@ -199,16 +202,15 @@ def train_model(model, train_loader, val_loader, optimizer_type, learning_rate, 
             if device_type != 'cpu':
                 with autocast(device_type=device_type):
                     seg_logits = model(images_seq)
-                    # Hybrid Loss laskenta
                     loss_bce = criterion_bce(seg_logits, masks_2d)
                     loss_tversky = criterion_tversky(seg_logits, masks_2d)
-                    loss = 0.5 * loss_bce + 0.5 * loss_tversky
+                    # Give Tversky (Recall) slightly more weight
+                    loss = 0.4 * loss_bce + 0.6 * loss_tversky
             else:
                 seg_logits = model(images_seq)
-                # Hybrid Loss laskenta
                 loss_bce = criterion_bce(seg_logits, masks_2d)
                 loss_tversky = criterion_tversky(seg_logits, masks_2d)
-                loss = 0.5 * loss_bce + 0.5 * loss_tversky
+                loss = 0.4 * loss_bce + 0.6 * loss_tversky
 
             if scaler:
                 scaler.scale(loss).backward()
@@ -239,12 +241,12 @@ def train_model(model, train_loader, val_loader, optimizer_type, learning_rate, 
                         seg_logits = model(images_seq)
                         loss_bce = criterion_bce(seg_logits, masks_2d)
                         loss_tversky = criterion_tversky(seg_logits, masks_2d)
-                        loss = 0.5 * loss_bce + 0.5 * loss_tversky
+                        loss = 0.4 * loss_bce + 0.6 * loss_tversky
                 else:
                     seg_logits = model(images_seq)
                     loss_bce = criterion_bce(seg_logits, masks_2d)
                     loss_tversky = criterion_tversky(seg_logits, masks_2d)
-                    loss = 0.5 * loss_bce + 0.5 * loss_tversky
+                    loss = 0.4 * loss_bce + 0.6 * loss_tversky
 
                 total_val_loss += loss.item()
                 val_iterator.set_postfix(loss=loss.item())
