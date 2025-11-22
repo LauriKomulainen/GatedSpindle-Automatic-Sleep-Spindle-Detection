@@ -10,8 +10,8 @@ TRAINING_PARAMS = {
     'learning_rate': 1e-4,
     'dropout_rate': 0.2,
     'optimizer_type': 'Adam',
-    'num_epochs': 30,  # Max epochs to run
-    'early_stopping_patience': 5  # How long to wait for improvement
+    'num_epochs': 50,  # Max epochs to run
+    'early_stopping_patience': 10  # How long to wait for improvement
 }
 
 CV_CONFIG = {

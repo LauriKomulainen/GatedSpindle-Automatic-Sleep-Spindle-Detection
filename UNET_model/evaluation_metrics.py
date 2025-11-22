@@ -25,14 +25,12 @@ def _find_events_dual_thresh(prob_1d: np.ndarray,
     min_samples = METRIC_PARAMS['min_duration_sec'] * fs
     max_samples = METRIC_PARAMS['max_duration_sec'] * fs
 
-    # 1. Etsi alueet, jotka ylittävät matalan kynnyksen (border)
     border_mask = prob_1d > border_thresh
     labeled_borders, num_border_regions = label(border_mask)
 
     if num_border_regions == 0:
         return []
 
-    # 2. Tarkista, ylittääkö alueen sisällä mikään kohta korkean kynnyksen (peak)
     peak_mask = prob_1d > peak_thresh
     labels_with_peaks = np.unique(labeled_borders[peak_mask])
     labels_with_peaks = labels_with_peaks[labels_with_peaks > 0]
@@ -66,9 +64,6 @@ def _calculate_iou(event1: Tuple[int, int], event2: Tuple[int, int]) -> float:
 
 
 def _stitch_predictions_1d(all_preds: torch.Tensor, step_samples: int) -> np.ndarray:
-    """
-    Yhdistää (stitch) päällekkäiset 1D-ikkunat yhdeksi pitkäksi signaaliksi käyttäen Hann-ikkunointia.
-    """
     num_windows, _, window_len = all_preds.shape
     final_len = (num_windows - 1) * step_samples + window_len
 
@@ -111,7 +106,10 @@ def compute_event_based_metrics(model, data_loader, threshold: float) -> Dict[st
             probs = torch.sigmoid(logits)
 
             all_probs_list.append(probs.cpu().half())
-            all_masks_list.append(masks.cpu().to(torch.uint8))
+
+            # --- KORJAUS: Pidetään float-muodossa, jotta 0.5 ei pyöristy nollaan! ---
+            all_masks_list.append(masks.cpu().float())
+            # ------------------------------------------------------------------------
 
     all_probs_tensor = torch.cat(all_probs_list, dim=0).float()
     all_masks_tensor = torch.cat(all_masks_list, dim=0).unsqueeze(1).float()
@@ -123,10 +121,8 @@ def compute_event_based_metrics(model, data_loader, threshold: float) -> Dict[st
     prob_1d_full = _stitch_predictions_1d(all_probs_tensor, step_samples)
     mask_1d_full = _stitch_predictions_1d(all_masks_tensor, step_samples)
 
-    # --- KORJAUS: Hyväksytään myös 0.5 (soft label) totuudeksi ---
-    # Käytämme 0.4 rajaa varmuuden vuoksi (floating point safety)
+    # Hyväksytään 0.5 (soft label) totuudeksi
     mask_1d_bool = mask_1d_full >= 0.4
-    # -------------------------------------------------------------
 
     del all_probs_tensor, all_masks_tensor
     gc.collect()
@@ -201,7 +197,9 @@ def find_optimal_threshold(model, val_loader) -> float:
             probs = torch.sigmoid(logits)
 
             all_probs_list.append(probs.cpu().half())
-            all_masks_list.append(masks.cpu().to(torch.uint8))
+            # --- KORJAUS: Float täälläkin ---
+            all_masks_list.append(masks.cpu().float())
+            # --------------------------------
 
     all_probs_tensor = torch.cat(all_probs_list, dim=0).float()
     all_masks_tensor = torch.cat(all_masks_list, dim=0).unsqueeze(1).float()
@@ -212,9 +210,7 @@ def find_optimal_threshold(model, val_loader) -> float:
     prob_1d_full = _stitch_predictions_1d(all_probs_tensor, step_samples)
     mask_1d_full = _stitch_predictions_1d(all_masks_tensor, step_samples)
 
-    # --- KORJAUS: Sama korjaus tänne ---
     mask_1d_bool = mask_1d_full >= 0.4
-    # -----------------------------------
 
     true_events = _find_events_dual_thresh(mask_1d_bool.astype(float), 0.5, 0.1, fs)
 

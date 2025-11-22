@@ -37,8 +37,11 @@ class RandomAugment1D:
 
     def __call__(self, signal):
         if random.random() < self.p:
+            # 1. Random Gain
             gain = random.uniform(0.8, 1.2)
             signal = signal * gain
+
+            # 2. Gaussian Noise Injection
             noise_level = random.uniform(0.0, 0.05)
             noise = torch.randn_like(signal) * noise_level
             signal = signal + noise
@@ -69,30 +72,22 @@ class SpindleDataset(Dataset):
         # 1. Raakasignaali
         raw_signal = np.array(self.x_mmap[idx], dtype=np.float32)
 
-        # --- TRI-MODAL SENSORY FUSION (KORJATTU) ---
+        # --- TRI-MODAL SENSORY FUSION ---
 
         # CH1: Context (Raw Broadband)
         ch1 = torch.tensor(raw_signal, dtype=torch.float32).unsqueeze(0)
 
         # CH2: Focus (Sigma Band 11-16Hz)
         sigma_signal = butter_bandpass_filter(raw_signal, 11.0, 16.0, self.fs, order=4)
-
-        # --- KORJAUS 1: Normalisointi poistettu ---
-        # Raakadatan globaali normalisointi on jo tehty (data_handler.py).
-        # Ikkunakohtainen Z-score tuhosi hiljaisten alueiden informaation.
-        # Poistettu rivit: if np.std > 1e-6: sigma = (sigma - mean) / std
-
+        # Z-score normalisointi, vältetään nollajako
+        std_val = np.std(sigma_signal)
+        if std_val > 1e-6:
+            sigma_signal = (sigma_signal - np.mean(sigma_signal)) / std_val
         ch2 = torch.tensor(sigma_signal.copy(), dtype=torch.float32).unsqueeze(0)
 
         # CH3: Energy (TEO)
         teo_signal = teager_energy_operator(sigma_signal)
-
-        # --- PARANNUS: Skaalaus ennen Tanh-funktiota ---
-        # Teager energy -arvot ovat usein hyvin pieniä (esim. 0.01), jolloin tanh on lineaarinen.
-        # Kerrotaan 10:llä, jotta voimakkaat piikit "saturoituvat" kohti 1.0:aa
-        # ja taustakohina pysyy lähellä nollaa.
-        teo_signal = np.tanh(teo_signal * 10.0)
-
+        teo_signal = np.tanh(teo_signal * 5.0)  # Hieman maltillisempi skaalaus (oli 10.0)
         ch3 = torch.tensor(teo_signal.copy(), dtype=torch.float32).unsqueeze(0)
 
         # Yhdistetään
@@ -102,8 +97,13 @@ class SpindleDataset(Dataset):
         if self.augment:
             signal_tensor = self.augmentor(signal_tensor)
 
-        # 2. Maski (Target)
+        # 2. Maski (Target) - KORJATTU LATAUS
+        # ---------------------------------------------------------
+        # VIRHE OLI TÄSSÄ: self.y_mmap[idx, 0] otti vain yhden luvun!
+        # KORJAUS: self.y_mmap[idx] ottaa koko rivin (500 pistettä)
         mask_1d = np.array(self.y_mmap[idx], dtype=np.float32)
+        # ---------------------------------------------------------
+
         mask_tensor = torch.tensor(mask_1d, dtype=torch.float32)
 
         return signal_tensor, mask_tensor
