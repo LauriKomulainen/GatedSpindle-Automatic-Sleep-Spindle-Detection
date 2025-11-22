@@ -7,8 +7,7 @@ import time
 import shutil
 from utils.logger import setup_logging
 from training_parameters import DATA_PARAMS
-from data_preprocess import handler, bandpassfilter, normalization, cwt_transform
-from utils import diagnostics
+from data_preprocess import handler, bandpassfilter, normalization
 
 setup_logging("data_handler.log")
 log = logging.getLogger(__name__)
@@ -39,6 +38,7 @@ def segment_data(raw, window_sec: float, overlap_sec: float):
             if start_sample < end_sample:
                 vote_mask[start_sample:end_sample] += 1.0
 
+    # Soft labels: 0.0 (ei kukaan), 0.5 (yksi), 1.0 (molemmat)
     final_mask = np.clip(vote_mask / 2.0, 0.0, 1.0).astype(np.float32)
 
     log.info(f"Created SOFT LABEL mask. Values: {np.unique(final_mask)}")
@@ -54,26 +54,16 @@ def segment_data(raw, window_sec: float, overlap_sec: float):
 
 
 def main():
-    log.info("---Starting DREAMS data preprocessing ---")
+    log.info("---Starting Optimized 1D data preprocessing ---")
     start_time = time.time()
 
-    diag_dir = Path("./diagnostics_plots")
-    examples_dir = Path("./diagnostics_plots/examples")
     output_dir = Path("./diagnostics_plots/processed_data")
 
-    if diag_dir.exists():
-        log.warning(f"Cleaning previous plots from: {diag_dir}")
-        shutil.rmtree(diag_dir)
     if output_dir.exists():
         log.warning(f"Cleaning previous data from: {output_dir}")
         shutil.rmtree(output_dir)
-    if examples_dir.exists():
-        log.warning(f"Cleaning previous data from: {examples_dir}")
-        shutil.rmtree(examples_dir)
 
-    diag_dir.mkdir(exist_ok=True)
-    examples_dir.mkdir(exist_ok=True)
-    output_dir.mkdir(exist_ok=True)
+    output_dir.mkdir(parents=True, exist_ok=True)
 
     patient_list = handler.find_dreams_data_files(DATA_DIRECTORY)
     if not patient_list:
@@ -92,60 +82,33 @@ def main():
         log.info(f"Data loaded. Sample rate: {fs} Hz.")
 
         signal_data = raw.get_data()[0]
+
+        # 1. Bandpass Filter (0.3 - 35 Hz) - Poistaa pahimmat häiriöt
         filtered_signal = bandpassfilter.apply_bandpass_filter(
             signal_data, fs, LOWCUT, HIGHCUT, FILTER_ORDER
         )
         log.info(f"Signal filtered ({LOWCUT}-{HIGHCUT} Hz).")
 
+        # 2. Normalisointi (Z-score)
         normalized_signal = normalization.normalize_data(filtered_signal)
         log.info("Signal normalized (Z-score).")
         raw._data[0] = normalized_signal
 
+        # 3. Segmentointi ikkunoihin
         x_windows, y_masks = segment_data(raw, window_sec=WINDOW_SEC, overlap_sec=OVERLAP_SEC)
-        log.info(f"Segmented to 1D data. X shape: {x_windows.shape}, Y shape: {y_masks.shape}")
+        log.info(f"Segmented to 1D data. X: {x_windows.shape}, Y: {y_masks.shape}")
 
-        # x_images on nyt (N, 3, H, W), y_images on (N, 1, H, W)
-        x_images, y_images = cwt_transform.transform_windows_to_images(
-            x_windows, y_masks, fs
-        )
-        log.info(
-            f"Converted to 3-Channel 2D images. X_images shape: {x_images.shape}, Y_images shape: {y_images.shape}")
+        # 4. Tallennus (Vain 1D-dataa, ei raskaita kuvia)
+        x_path = output_dir / f"{patient_id}_X_1D.npy"
+        y_path = output_dir / f"{patient_id}_Y_1D.npy"
 
-        try:
-            # --- KORJAUS TÄSSÄ ---
-            # Etsi ensimmäinen sukkula 1D-maskien (y_masks) perusteella.
-            first_spindle_idx = np.where(np.sum(y_masks, axis=1) > 0)[0][0]
+        np.save(x_path, x_windows)
+        np.save(y_path, y_masks)
 
-            if first_spindle_idx >= 0:
-                log.info(f"Found first spindle in window {first_spindle_idx}. Saving diagnostic plot.")
-                plot_save_path = examples_dir / f"{patient_id}_spindle_example_idx{first_spindle_idx}.png"
-
-                # Välitä oikeat (uudet) datat diagnostiikkafunktiolle
-                diagnostics.save_diagnostic_plot(
-                    signal_1d=x_windows[first_spindle_idx],
-                    mask_1d=y_masks[first_spindle_idx],
-                    image_3c=x_images[first_spindle_idx],  # Tämä on (3, H, W)
-                    mask_2d=y_images[first_spindle_idx],  # Tämä on (1, H, W)
-                    fs=fs,
-                    save_path=plot_save_path
-                )
-        except IndexError:
-            # Tämä on normaalia, jos potilaalla ei ole sukkuloita
-            log.warning("No spindles found for this subject. No diagnostic plot will be saved.")
-        except Exception as e:
-            # Tämä nappasi aiemmin virheeni
-            log.error(f"Failed to save diagnostic plot: {e}")
-
-        x_path = output_dir / f"{patient_id}_X_images.npy"
-        y_path = output_dir / f"{patient_id}_Y_images.npy"
-        x_1d_path = output_dir / f"{patient_id}_X_1D.npy"
-        np.save(x_path, x_images)
-        np.save(y_path, y_images)
-        np.save(x_1d_path, x_windows)
-        log.info(f"Saved final 3-Channel images and 1D signals to {output_dir}")
+        log.info(f"Saved clean 1D signals to {output_dir}")
 
     end_time = time.time()
-    log.info(f"\n---Full preprocessing complete. Total time: {end_time - start_time:.2f} seconds ---")
+    log.info(f"\n---Preprocessing complete. Total time: {end_time - start_time:.2f} seconds ---")
 
 
 if __name__ == "__main__":

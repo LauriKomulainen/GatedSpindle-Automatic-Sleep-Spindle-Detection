@@ -6,7 +6,7 @@ import mne
 import numpy as np
 from typing import List, Dict, Optional, Any
 
-from training_parameters import DATA_PARAMS  # Tuo globaali asetus
+from training_parameters import DATA_PARAMS
 
 log = logging.getLogger(__name__)
 
@@ -79,18 +79,25 @@ def _load_dreams_annotations_txt(txt_file_path: Path, sfreq: float) -> mne.Annot
         return mne.Annotations([], [], [])
 
     onsets, durations, descriptions = [], [], []
-    is_samples = np.all(np.mod(annotations_data[:, 0:2], 1) == 0)
+
+    # --- KORJAUS ALKAA ---
+    # Poistettu automaattinen tunnistus (is_samples), koska DREAMS-data
+    # on aina sekunteja, vaikka luvut olisivat tasan (esim. 100.0).
 
     for row in annotations_data:
         start_val, duration_val = row[0], row[1]
-        start_sec = start_val / sfreq if is_samples else start_val
-        duration_sec = duration_val / sfreq if is_samples else duration_val
+
+        # Oletetaan aina sekunneiksi DREAMS-dokumentaation mukaisesti
+        start_sec = start_val
+        duration_sec = duration_val
+
         if duration_sec <= 0:
             log.warning(f"Invalid (zero/negative) duration {duration_sec}s on row {row}. Skipping.")
             continue
         onsets.append(start_sec)
         durations.append(duration_sec)
         descriptions.append('spindle')
+    # --- KORJAUS PÄÄTTYY ---
 
     log.info(f"Found and converted {len(onsets)} annotations.")
     return mne.Annotations(onset=onsets, duration=durations, description=descriptions)

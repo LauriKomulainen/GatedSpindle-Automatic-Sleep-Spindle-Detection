@@ -7,36 +7,28 @@ Central configuration file for all training hyperparameters and data settings.
 # --- Training Hyperparameters ---
 TRAINING_PARAMS = {
     'batch_size': 16,
-    'learning_rate': 1e-3,
+    'learning_rate': 1e-4,
     'dropout_rate': 0.2,
     'optimizer_type': 'Adam',
-    'num_epochs': 50,  # Max epochs to run
-    'early_stopping_patience': 10  # How long to wait for improvement
+    'num_epochs': 30,  # Max epochs to run
+    'early_stopping_patience': 5  # How long to wait for improvement
 }
 
 CV_CONFIG = {
     # 'folds_to_run': None,      <-- run everything
     # 'folds_to_run': [3],       <-- run only Excerpt 4 (indeksi 3)
     # 'folds_to_run': [1, 3],    <-- run 2 ja Excerpt 4
-    'folds_to_run': [1, 3]
+    'folds_to_run': [3]
 }
 
 # --- Data & Preprocessing Parameters ---
 DATA_PARAMS = {
-    'fs': 100.0,  # Target sample rate (all data will be resampled to this)
+    'fs': 200.0,  # Target sample rate (all data will be resampled to this)
     'window_sec': 5.0,  # Window length in seconds
     'overlap_sec': 2.5,  # Overlap between windows
     'lowcut': 0.3,  # Bandpass filter low cut (Hz)
     'highcut': 35.0,  # Bandpass filter high cut (Hz)
     'filter_order': 4  # Order of the Butterworth filter
-}
-
-# --- CWT Parameters ---
-CWT_PARAMS = {
-    'freq_bins': 64,  # Image height in pixels
-    'freq_low': 1.0,  # Lowest frequency in the image
-    'freq_high': 35.0,  # Highest frequency in the image
-    'wavelet_name': 'morl'  # Wavelet to use (Morlet)
 }
 
 # --- Event Metric Parameters ---
