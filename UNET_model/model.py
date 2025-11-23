@@ -1,100 +1,125 @@
 # UNET_model/model.py
 
 import torch
-import os
 import torch.nn as nn
 import torch.nn.functional as F
 import math
 import logging
 import numpy as np
-from tqdm import tqdm
+import os
 
 log = logging.getLogger(__name__)
 
+
+# --- BACK TO RELIABLE LOSS ---
 class DiceBCELoss(nn.Module):
-    def __init__(self, weight=None, size_average=True):
+    def __init__(self, smooth=1.0):
         super(DiceBCELoss, self).__init__()
+        self.smooth = smooth
 
-    def forward(self, inputs, targets, smooth=1):
-        inputs = torch.sigmoid(inputs)
-        inputs = inputs.view(-1)
+    def forward(self, inputs, targets):
+        inputs = torch.sigmoid(inputs).view(-1)
         targets = targets.view(-1)
+
         intersection = (inputs * targets).sum()
-        dice_loss = 1 - (2. * intersection + smooth) / (inputs.sum() + targets.sum() + smooth)
+        dice_loss = 1 - (2. * intersection + self.smooth) / (inputs.sum() + targets.sum() + self.smooth)
         bce = F.binary_cross_entropy(inputs, targets, reduction='mean')
-        return bce + dice_loss
 
-class AttentionBlock(nn.Module):
-    def __init__(self, F_g, F_l, F_int):
-        super(AttentionBlock, self).__init__()
-        self.W_g = nn.Sequential(
-            nn.Conv1d(F_g, F_int, kernel_size=1, stride=1, padding=0, bias=True),
-            nn.BatchNorm1d(F_int)
-        )
-        self.W_x = nn.Sequential(
-            nn.Conv1d(F_l, F_int, kernel_size=1, stride=1, padding=0, bias=True),
-            nn.BatchNorm1d(F_int)
-        )
-        self.psi = nn.Sequential(
-            nn.Conv1d(F_int, 1, kernel_size=1, stride=1, padding=0, bias=True),
-            nn.BatchNorm1d(1),
-            nn.Sigmoid()
-        )
-        self.relu = nn.ReLU(inplace=True)
-
-    def forward(self, g, x):
-        g1 = self.W_g(g)
-        x1 = self.W_x(x)
-        if g1.size(2) != x1.size(2):
-            g1 = F.interpolate(g1, size=x1.size(2), mode='linear', align_corners=False)
-        psi = self.relu(g1 + x1)
-        psi = self.psi(psi)
-        return psi
+        # Tasapainotettu loss
+        return 0.5 * bce + 0.5 * dice_loss
 
 
-class SingleConv(nn.Module):
-    def __init__(self, in_channels, out_channels, kernel_size, padding, dilation):
-        super(SingleConv, self).__init__()
-        self.single_conv = nn.Sequential(
-            nn.Conv1d(in_channels, out_channels, kernel_size=kernel_size, padding=padding, dilation=dilation),
-            nn.BatchNorm1d(out_channels),
-            nn.ReLU(),
-        )
+# --- CBAM ATTENTION (KEEP THIS) ---
+class ChannelAttention(nn.Module):
+    def __init__(self, in_planes, ratio=8):
+        super(ChannelAttention, self).__init__()
+        self.avg_pool = nn.AdaptiveAvgPool1d(1)
+        self.max_pool = nn.AdaptiveMaxPool1d(1)
+        self.fc1 = nn.Conv1d(in_planes, in_planes // ratio, 1, bias=False)
+        self.relu1 = nn.ReLU()
+        self.fc2 = nn.Conv1d(in_planes // ratio, in_planes, 1, bias=False)
+        self.sigmoid = nn.Sigmoid()
 
-    def forward(self, x): return self.single_conv(x)
+    def forward(self, x):
+        avg_out = self.fc2(self.relu1(self.fc1(self.avg_pool(x))))
+        max_out = self.fc2(self.relu1(self.fc1(self.max_pool(x))))
+        out = avg_out + max_out
+        return self.sigmoid(out)
 
 
+class SpatialAttention(nn.Module):
+    def __init__(self, kernel_size=7):
+        super(SpatialAttention, self).__init__()
+        padding = 3 if kernel_size == 7 else 1
+        self.conv1 = nn.Conv1d(2, 1, kernel_size, padding=padding, bias=False)
+        self.sigmoid = nn.Sigmoid()
+
+    def forward(self, x):
+        avg_out = torch.mean(x, dim=1, keepdim=True)
+        max_out, _ = torch.max(x, dim=1, keepdim=True)
+        x = torch.cat([avg_out, max_out], dim=1)
+        x = self.conv1(x)
+        return self.sigmoid(x)
+
+
+class CBAMBlock(nn.Module):
+    def __init__(self, in_planes, ratio=8, kernel_size=7):
+        super(CBAMBlock, self).__init__()
+        self.ca = ChannelAttention(in_planes, ratio)
+        self.sa = SpatialAttention(kernel_size)
+
+    def forward(self, x):
+        x = x * self.ca(x)
+        x = x * self.sa(x)
+        return x
+
+
+# --- BLOCKS WITH INSTANCE NORM (KEEP THIS) ---
 class ConvBlock(nn.Module):
-    def __init__(self, in_channels, out_channels, kernel_size, dilation):
+    def __init__(self, in_channels, out_channels, kernel_size=7):
         super(ConvBlock, self).__init__()
-        self.conv_block = nn.Sequential(
-            SingleConv(in_channels, out_channels, kernel_size, "same", dilation),
-            SingleConv(out_channels, out_channels, kernel_size, "same", dilation),
-        )
+        padding = "same"
+        self.conv1 = nn.Conv1d(in_channels, out_channels, kernel_size, padding=padding)
+        self.bn1 = nn.InstanceNorm1d(out_channels, affine=True)
+        self.relu = nn.ReLU(inplace=True)
+        self.conv2 = nn.Conv1d(out_channels, out_channels, kernel_size, padding=padding)
+        self.bn2 = nn.InstanceNorm1d(out_channels, affine=True)
+        self.cbam = CBAMBlock(out_channels)
+        self.shortcut = nn.Identity()
+        if in_channels != out_channels:
+            self.shortcut = nn.Sequential(
+                nn.Conv1d(in_channels, out_channels, kernel_size=1),
+                nn.InstanceNorm1d(out_channels, affine=True)
+            )
 
-    def forward(self, x): return self.conv_block(x)
+    def forward(self, x):
+        residual = self.shortcut(x)
+        out = self.conv1(x)
+        out = self.bn1(out)
+        out = self.relu(out)
+        out = self.conv2(out)
+        out = self.bn2(out)
+        out = self.cbam(out)
+        out += residual
+        out = self.relu(out)
+        return out
 
 
-class Decoder(nn.Module):
-    def __init__(self, in_channels, out_channels, scale_factor, kernel_size, dilation):
-        super(Decoder, self).__init__()
+class DecoderBlock(nn.Module):
+    def __init__(self, in_channels, out_channels, scale_factor=2):
+        super(DecoderBlock, self).__init__()
         self.up = nn.Upsample(scale_factor=scale_factor, mode="linear", align_corners=False)
-        self.single_conv = SingleConv(in_channels, out_channels, 1, "same", dilation)
-        self.conv_block = ConvBlock(in_channels, out_channels, kernel_size, dilation)
-        self.attention_block = AttentionBlock(out_channels, out_channels, out_channels)
+        self.conv = ConvBlock(in_channels, out_channels)
 
-    def forward(self, x1, x2):
-        x1 = self.up(x1)
-        x1 = self.single_conv(x1)
-        if x1.size(2) != x2.size(2):
-            x1 = F.interpolate(x1, size=x2.size(2), mode='linear', align_corners=False)
-        psi = self.attention_block(x1, x2)
-        x = torch.cat([x2 * psi, x1], dim=1)
-        return self.conv_block(x)
+    def forward(self, x, skip):
+        x = self.up(x)
+        if x.size(2) != skip.size(2):
+            x = F.interpolate(x, size=skip.size(2), mode='linear', align_corners=False)
+        x = torch.cat([x, skip], dim=1)
+        return self.conv(x)
 
 
-# --- NOVELTY: TRANSFORMER BOTTLENECK ---
-
+# --- TRANSFORMER ---
 class PositionalEncoding(nn.Module):
     def __init__(self, d_model, max_len=5000):
         super(PositionalEncoding, self).__init__()
@@ -107,95 +132,69 @@ class PositionalEncoding(nn.Module):
         self.register_buffer('pe', pe)
 
     def forward(self, x):
-        # x: (Length, Batch, Channels)
         return x + self.pe[:x.size(0), :]
 
 
 class UNet(nn.Module):
     def __init__(self, dropout_rate=0.2):
         super(UNet, self).__init__()
-        self.bn = nn.BatchNorm1d(3)  # Paluu 3 kanavaan (Raw, Sigma, TEO) - Puhtaampi signaali
-        kernel_size = 7
-
-        # Encoder (CNN)
-        self.encoders = nn.ModuleList([
-            ConvBlock(3, 32, kernel_size, 1),
-            ConvBlock(32, 64, kernel_size, 1),
-            ConvBlock(64, 128, kernel_size, 1)
-        ])
-
-        self.dropout = nn.Dropout(p=dropout_rate)
-        self.pool = nn.AvgPool1d(2)
-
-        # --- TRANSFORMER BOTTLENECK ---
-        # Tämä korvaa LSTM:n ja tuo globaalin kontekstin
-        self.d_model = 256  # Projektio 128 -> 256
-
-        self.project_in = nn.Conv1d(128, self.d_model, kernel_size=1)  # 128 (Enc out) -> 256 (Trans in)
+        self.input_norm = nn.InstanceNorm1d(3, affine=True)
+        self.enc1 = ConvBlock(3, 32)
+        self.pool1 = nn.MaxPool1d(2)
+        self.drop1 = nn.Dropout(dropout_rate)
+        self.enc2 = ConvBlock(32, 64)
+        self.pool2 = nn.MaxPool1d(2)
+        self.drop2 = nn.Dropout(dropout_rate)
+        self.enc3 = ConvBlock(64, 128)
+        self.pool3 = nn.MaxPool1d(2)
+        self.drop3 = nn.Dropout(dropout_rate)
+        self.d_model = 128
         self.pos_encoder = PositionalEncoding(d_model=self.d_model)
-
-        # Transformer Encoder Layer
-        encoder_layer = nn.TransformerEncoderLayer(
-            d_model=self.d_model,
-            nhead=8,  # 8 päätä antaa tarkemman huomion
-            dim_feedforward=512,
-            dropout=0.2
-        )
-        self.transformer_encoder = nn.TransformerEncoder(encoder_layer, num_layers=3)  # 3 kerrosta syvyyttä
-
-        # Decoder (CNN)
-        self.decoders = nn.ModuleList([
-            Decoder(256, 128, 2, kernel_size, 1),  # Input 256 (Transformerista)
-            Decoder(128, 64, 2, kernel_size, 1),
-            Decoder(64, 32, 2, kernel_size, 1)
-        ])
-
-        self.dense = nn.Conv1d(32, 1, kernel_size=1, padding='same')
+        encoder_layer = nn.TransformerEncoderLayer(d_model=self.d_model, nhead=4, dim_feedforward=256,
+                                                   dropout=dropout_rate, activation='gelu')
+        self.transformer = nn.TransformerEncoder(encoder_layer, num_layers=3)
+        self.dec1 = DecoderBlock(256, 64)
+        self.dec2 = DecoderBlock(128, 32)
+        self.dec3 = DecoderBlock(64, 32)
+        self.final_conv = nn.Conv1d(32, 1, kernel_size=1)
 
     def forward(self, x):
-        x = self.bn(x)
-        features_enc = []
-
-        # 1. CNN Encoder Path
-        for enc in self.encoders:
-            x = enc(x)
-            features_enc.append(x)
-            x = self.dropout(x)
-            x = self.pool(x)
-
-        # 2. Transformer Bottleneck Path
-        # x shape: (Batch, 128, Length)
-        x = self.project_in(x)  # -> (Batch, 256, Length)
-        x = x.permute(2, 0, 1)  # -> (Length, Batch, 256) [Transformer format]
-        x = self.pos_encoder(x)  # Add position info
-        x = self.transformer_encoder(x)  # Global Attention Magic
-        x = x.permute(1, 2, 0)  # -> (Batch, 256, Length) [CNN format]
-
-        # 3. CNN Decoder Path
-        features_enc.reverse()
-        for dec, x_enc in zip(self.decoders, features_enc):
-            x = self.dropout(x)
-            x = dec(x, x_enc)
-
-        logits = self.dense(x)
-        return logits
+        x = self.input_norm(x)
+        e1 = self.enc1(x)
+        p1 = self.pool1(e1)
+        p1 = self.drop1(p1)
+        e2 = self.enc2(p1)
+        p2 = self.pool2(e2)
+        p2 = self.drop2(p2)
+        e3 = self.enc3(p2)
+        p3 = self.pool3(e3)
+        p3 = self.drop3(p3)
+        bn = p3.permute(2, 0, 1)
+        bn = self.pos_encoder(bn)
+        bn = self.transformer(bn)
+        bn = bn.permute(1, 2, 0)
+        d1 = self.dec1(bn, e3)
+        d2 = self.dec2(d1, e2)
+        d3 = self.dec3(d2, e1)
+        return self.final_conv(d3)
 
 
 def train_model(model, train_loader, val_loader, optimizer_type, learning_rate, num_epochs, early_stopping_patience,
                 output_dir, fs):
+    from tqdm import tqdm
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     if torch.backends.mps.is_available(): device = torch.device('mps')
 
     model.to(device)
-    optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
+    optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate, weight_decay=1e-4)
+    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=5)
 
-    # Vaihdetaan DiceBCE-lossiin, joka on stabiilimpi segmentaatiossa
+    # PALAUTETTU: DiceBCELoss
     criterion = DiceBCELoss().to(device)
 
-    train_losses, val_losses = [], []
     best_val_loss = float('inf')
     patience_counter = 0
-    mixup_alpha = 0.2
+    train_losses, val_losses = [], []
 
     for epoch in range(num_epochs):
         model.train()
@@ -204,9 +203,8 @@ def train_model(model, train_loader, val_loader, optimizer_type, learning_rate, 
             x, y = x.to(device), y.to(device)
             optimizer.zero_grad()
 
-            # Mixup regularization
-            if np.random.random() < 0.5:
-                lam = np.random.beta(mixup_alpha, mixup_alpha)
+            if np.random.random() < 0.3:
+                lam = np.random.beta(0.4, 0.4)
                 index = torch.randperm(x.size(0)).to(device)
                 mixed_x = lam * x + (1 - lam) * x[index, :]
                 out = model(mixed_x)
@@ -236,16 +234,17 @@ def train_model(model, train_loader, val_loader, optimizer_type, learning_rate, 
         avg_val = val_loss / len(val_loader)
         val_losses.append(avg_val)
 
-        log.info(f"Epoch {epoch + 1}/{num_epochs}: Train {avg_train:.4f}, Val {avg_val:.4f}")
+        scheduler.step(avg_val)
+
+        log.info(f"Epoch {epoch + 1}: Train {avg_train:.4f}, Val {avg_val:.4f}")
 
         if avg_val < best_val_loss:
             best_val_loss = avg_val
             torch.save(model.state_dict(), os.path.join(output_dir, 'unet_model_best.pth'))
             patience_counter = 0
-            log.info(f"Validation loss improved. Saved model. (Patience: 0/{early_stopping_patience})")
+            log.info("Validation loss improved. Saved model.")
         else:
             patience_counter += 1
-            log.info(f"Validation loss did not improve. Counter: {patience_counter}/{early_stopping_patience}")
             if patience_counter >= early_stopping_patience:
                 log.info("Early stopping triggered.")
                 break

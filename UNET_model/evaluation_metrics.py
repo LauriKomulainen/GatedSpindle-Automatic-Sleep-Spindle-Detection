@@ -14,13 +14,12 @@ log = logging.getLogger(__name__)
 FIXED_BORDER_THRESH = 0.2
 
 
+# --- POISTETTU: _verify_spindle_frequency (Aiheutti Recall-romahduksen) ---
+
 def _find_events_dual_thresh(prob_1d: np.ndarray,
                              peak_thresh: float,
                              border_thresh: float,
                              fs: float) -> List[Tuple[int, int]]:
-    """
-    Etsii tapahtumat (alku, loppu) 1D-todennäköisyyskäyrästä kahden kynnyksen taktiikalla.
-    """
     min_samples = METRIC_PARAMS['min_duration_sec'] * fs
     max_samples = METRIC_PARAMS['max_duration_sec'] * fs
 
@@ -33,9 +32,6 @@ def _find_events_dual_thresh(prob_1d: np.ndarray,
     peak_mask = prob_1d > peak_thresh
     labels_with_peaks = np.unique(labeled_borders[peak_mask])
     labels_with_peaks = labels_with_peaks[labels_with_peaks > 0]
-
-    if len(labels_with_peaks) == 0:
-        return []
 
     valid_slices = find_objects(labeled_borders)
     events = []
@@ -65,24 +61,19 @@ def _calculate_iou(event1: Tuple[int, int], event2: Tuple[int, int]) -> float:
 def _stitch_predictions_1d(all_preds: torch.Tensor, step_samples: int) -> np.ndarray:
     num_windows, _, window_len = all_preds.shape
     final_len = (num_windows - 1) * step_samples + window_len
-
     stitched_sum = torch.zeros(final_len, dtype=torch.float32)
     stitched_weights = torch.zeros(final_len, dtype=torch.float32)
-
     window_weights = torch.hann_window(window_len, periodic=False)
     preds_flat = all_preds.squeeze(1).cpu()
 
     for i in range(num_windows):
         start = i * step_samples
         end = start + window_len
-
         stitched_sum[start:end] += preds_flat[i] * window_weights
         stitched_weights[start:end] += window_weights
 
     stitched_weights[stitched_weights == 0] = 1e-6
-    stitched_result = stitched_sum / stitched_weights
-
-    return stitched_result.numpy()
+    return (stitched_sum / stitched_weights).numpy()
 
 
 def compute_event_based_metrics(model, data_loader, threshold: float) -> Dict[str, float]:
@@ -101,17 +92,26 @@ def compute_event_based_metrics(model, data_loader, threshold: float) -> Dict[st
     with torch.no_grad():
         for inputs, masks in tqdm(data_loader, desc="Evaluating Events"):
             inputs = inputs.to(device)
+
+            # --- NOVELTY: TEST TIME AUGMENTATION (TTA) ---
+            # 1. Normaali ennuste
             logits = model(inputs)
             probs = torch.sigmoid(logits)
 
-            all_probs_list.append(probs.cpu().half())
+            # 2. Flipattu ennuste (Peilikuva)
+            inputs_flipped = torch.flip(inputs, dims=[2])
+            logits_flipped = model(inputs_flipped)
+            probs_flipped = torch.sigmoid(logits_flipped)
+            probs_flipped = torch.flip(probs_flipped, dims=[2])  # Käännetään takaisin
 
-            # --- KORJAUS: Pidetään float-muodossa, jotta 0.5 ei pyöristy nollaan! ---
+            # Keskiarvo (Vähentää satunnaista kohinaa)
+            probs_avg = (probs + probs_flipped) / 2.0
+
+            all_probs_list.append(probs_avg.cpu().float())
             all_masks_list.append(masks.cpu().float())
-            # ------------------------------------------------------------------------
 
-    all_probs_tensor = torch.cat(all_probs_list, dim=0).float()
-    all_masks_tensor = torch.cat(all_masks_list, dim=0).unsqueeze(1).float()
+    all_probs_tensor = torch.cat(all_probs_list, dim=0)
+    all_masks_tensor = torch.cat(all_masks_list, dim=0).unsqueeze(1)
 
     del all_probs_list, all_masks_list
     gc.collect()
@@ -120,24 +120,19 @@ def compute_event_based_metrics(model, data_loader, threshold: float) -> Dict[st
     prob_1d_full = _stitch_predictions_1d(all_probs_tensor, step_samples)
     mask_1d_full = _stitch_predictions_1d(all_masks_tensor, step_samples)
 
-    # Hyväksytään 0.5 (soft label) totuudeksi
     mask_1d_bool = mask_1d_full >= 0.4
-
-    del all_probs_tensor, all_masks_tensor
-    gc.collect()
 
     log.info(f"Finding events (Peak Thresh: {threshold:.2f})...")
     pred_events = _find_events_dual_thresh(prob_1d_full, threshold, FIXED_BORDER_THRESH, fs)
     true_events = _find_events_dual_thresh(mask_1d_bool.astype(float), 0.5, 0.1, fs)
 
-    log.info(f"Found {len(true_events)} true events (corrected) and {len(pred_events)} predicted events.")
+    log.info(f"Found {len(true_events)} true events and {len(pred_events)} predicted events.")
 
     total_tp, total_fp = 0, 0
     matched_true_indices = set()
     iou_scores = []
 
     for pred in pred_events:
-        found_match = False
         best_iou = 0
         best_idx = -1
 
@@ -176,7 +171,7 @@ def compute_event_based_metrics(model, data_loader, threshold: float) -> Dict[st
 
 
 def find_optimal_threshold(model, val_loader) -> float:
-    log.info("Finding optimal threshold...")
+    log.info("Finding optimal threshold with TTA...")
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     if torch.backends.mps.is_available(): device = torch.device('mps')
 
@@ -192,30 +187,31 @@ def find_optimal_threshold(model, val_loader) -> float:
     with torch.no_grad():
         for inputs, masks in tqdm(val_loader, desc="Optimizing"):
             inputs = inputs.to(device)
+
+            # TTA Validointivaiheessa myös!
             logits = model(inputs)
             probs = torch.sigmoid(logits)
 
-            all_probs_list.append(probs.cpu().half())
-            # --- KORJAUS: Float täälläkin ---
+            inputs_flipped = torch.flip(inputs, dims=[2])
+            logits_flipped = model(inputs_flipped)
+            probs_flipped = torch.flip(torch.sigmoid(logits_flipped), dims=[2])
+
+            probs_avg = (probs + probs_flipped) / 2.0
+
+            all_probs_list.append(probs_avg.cpu().float())
             all_masks_list.append(masks.cpu().float())
-            # --------------------------------
 
-    all_probs_tensor = torch.cat(all_probs_list, dim=0).float()
-    all_masks_tensor = torch.cat(all_masks_list, dim=0).unsqueeze(1).float()
-
-    del all_probs_list, all_masks_list
-    gc.collect()
+    all_probs_tensor = torch.cat(all_probs_list, dim=0)
+    all_masks_tensor = torch.cat(all_masks_list, dim=0).unsqueeze(1)
 
     prob_1d_full = _stitch_predictions_1d(all_probs_tensor, step_samples)
     mask_1d_full = _stitch_predictions_1d(all_masks_tensor, step_samples)
 
     mask_1d_bool = mask_1d_full >= 0.4
-
     true_events = _find_events_dual_thresh(mask_1d_bool.astype(float), 0.5, 0.1, fs)
 
     best_f1 = 0.0
     best_thresh = 0.5
-
     thresholds = np.arange(0.2, 0.96, 0.05)
 
     for th in thresholds:
@@ -233,7 +229,6 @@ def find_optimal_threshold(model, val_loader) -> float:
 
         fp = len(pred_events) - tp
         fn = len(true_events) - tp
-
         prec = tp / (tp + fp + 1e-6)
         rec = tp / (tp + fn + 1e-6)
         f1 = 2 * prec * rec / (prec + rec + 1e-6)

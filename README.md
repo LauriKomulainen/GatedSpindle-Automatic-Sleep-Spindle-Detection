@@ -1,27 +1,28 @@
-# Model Performance Report (Work in progress, latest run)
-This repository implements a deep learning framework for sleep spindle detection using a U-Net architecture with a Transformer Bottleneck. The model leverages a multi-view input approach (Raw EEG, Sigma-filtered, and Teager Energy Operator) to robustly identify spindle events across diverse subjects.
+# Model Performance Report (Latest Run)
+This repository implements a robust deep learning framework for sleep spindle detection using a customized **Res-U-Net** architecture.
 
-## Architecture Overview
-1. Backbone: U-Net (1D Convolutional Neural Network).
+## Key Architectural Features
+1. **Backbone:** U-Net with Residual Blocks (Res-U-Net).
+2. **Global Context:** Transformer Encoder Bottleneck to capture long-range temporal dependencies.
+3. **Domain Generalization:** **Instance Normalization** is used instead of Batch Normalization to make the model invariant to signal amplitude differences between subjects (solving the "quiet vs. loud" subject problem).
+4. **Attention Mechanism:** **CBAM (Convolutional Block Attention Module)** is integrated into the encoder to help the model focus on relevant morphological features (spindle shape) and ignore noise.
+5. **Inference:** **Test-Time Augmentation (TTA)** is used during prediction (averaging predictions of the original and flipped signal) to improve robustness.
 
-2. Bottleneck: Transformer Encoder (replacing the traditional LSTM/BiLSTM). This allows the model to capture global temporal dependencies and long-range context within the signal window.
-
-3. Input: 3-Channel Time-Series:
-- Raw EEG 
-- Sigma-band filtered signal (11-16 Hz)
-- Teager Energy Operator (TEO) signal
-
-4. Loss Function: DiceBCE Loss (Combination of Dice Loss and Binary Cross-Entropy).
+## Input Data
+Multi-view 3-Channel Time-Series:
+- **Raw EEG** (Context)
+- **Sigma-band filtered signal** (11-16 Hz) (Focus)
+- **Teager Energy Operator (TEO)** signal (Energy)
 
 ## Performance Results (LOSO Cross-Validation)
-The model was evaluated using Leave-One-Subject-Out (LOSO) cross-validation on the DREAMS database.
+The model was evaluated using **Leave-One-Subject-Out (LOSO)** cross-validation on the DREAMS database.
 
 | Subject (Excerpt) | F1-score | Precision | Recall | TP (Events) | FP (Events) | FN (Events) | mIoU |
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
-| **Excerpt 1** | 0.7722 | 0.8000 | 0.7463 | 100 | 25 | 34 | 0.8050 |
-| **Excerpt 2** | 0.6207 | 0.9231 | 0.4675 | 36 | 3 | 41 | 0.8088 |
-| **Excerpt 3** | 0.7674 | 0.7857 | 0.7500 | 33 | 9 | 11 | 0.7578 |
-| **Excerpt 4** | 0.5217 | 0.3724 | 0.8710 | 54 | 91 | 8 | 0.7051 |
-| **Excerpt 5** | 0.7736 | 0.7523 | 0.7961 | 82 | 27 | 21 | 0.8188 |
-| **Excerpt 6** | 0.7925 | 0.8842 | 0.7179 | 84 | 11 | 33 | 0.7953 |
-| **AVERAGE** | **0.7080 (± 0.1012)** | **0.7530 (± 0.1799)** | **0.7248 (± 0.1250)** | **64.8** | **27.7** | **24.7** | **0.7818 (± 0.0393)** |
+| **Excerpt 1** | 0.7727 | 0.7846 | 0.7612 | 102 | 28 | 32 | 0.8056 |
+| **Excerpt 2** | 0.6772 | 0.8600 | 0.5584 | 43 | 7 | 34 | 0.7686 |
+| **Excerpt 3** | 0.7475 | 0.6727 | 0.8409 | 37 | 18 | 7 | 0.7424 |
+| **Excerpt 4** | 0.6165 | 0.5775 | 0.6613 | 41 | 30 | 21 | 0.7277 |
+| **Excerpt 5** | 0.7721 | 0.7411 | 0.8058 | 83 | 29 | 20 | 0.8245 |
+| **Excerpt 6** | 0.7822 | 0.8148 | 0.7521 | 88 | 20 | 29 | 0.8142 |
+| **AVERAGE** | **0.7280 (± 0.0609)** | **0.7418 (± 0.0939)** | **0.7300 (± 0.0946)** | **65.7** | **22.0** | **23.8** | **0.7805 (± 0.0367)** |
