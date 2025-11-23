@@ -7,11 +7,13 @@ import math
 import logging
 import numpy as np
 import os
+from torch.optim.swa_utils import AveragedModel, SWALR
 
 log = logging.getLogger(__name__)
 
 
-# --- BACK TO RELIABLE LOSS ---
+# --- MALLILUOKAT (DiceBCE, CBAM, ConvBlock, DecoderBlock, PositionalEncoding, UNet) TÄSSÄ ---
+
 class DiceBCELoss(nn.Module):
     def __init__(self, smooth=1.0):
         super(DiceBCELoss, self).__init__()
@@ -20,16 +22,12 @@ class DiceBCELoss(nn.Module):
     def forward(self, inputs, targets):
         inputs = torch.sigmoid(inputs).view(-1)
         targets = targets.view(-1)
-
         intersection = (inputs * targets).sum()
         dice_loss = 1 - (2. * intersection + self.smooth) / (inputs.sum() + targets.sum() + self.smooth)
         bce = F.binary_cross_entropy(inputs, targets, reduction='mean')
-
-        # Tasapainotettu loss
         return 0.5 * bce + 0.5 * dice_loss
 
 
-# --- CBAM ATTENTION (KEEP THIS) ---
 class ChannelAttention(nn.Module):
     def __init__(self, in_planes, ratio=8):
         super(ChannelAttention, self).__init__()
@@ -74,7 +72,6 @@ class CBAMBlock(nn.Module):
         return x
 
 
-# --- BLOCKS WITH INSTANCE NORM (KEEP THIS) ---
 class ConvBlock(nn.Module):
     def __init__(self, in_channels, out_channels, kernel_size=7):
         super(ConvBlock, self).__init__()
@@ -119,7 +116,6 @@ class DecoderBlock(nn.Module):
         return self.conv(x)
 
 
-# --- TRANSFORMER ---
 class PositionalEncoding(nn.Module):
     def __init__(self, d_model, max_len=5000):
         super(PositionalEncoding, self).__init__()
@@ -179,6 +175,8 @@ class UNet(nn.Module):
         return self.final_conv(d3)
 
 
+# --- SWA TRAINING LOOP WITH COSINE ANNEALING (Korjattu tallennus) ---
+
 def train_model(model, train_loader, val_loader, optimizer_type, learning_rate, num_epochs, early_stopping_patience,
                 output_dir, fs):
     from tqdm import tqdm
@@ -187,14 +185,20 @@ def train_model(model, train_loader, val_loader, optimizer_type, learning_rate, 
 
     model.to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate, weight_decay=1e-4)
-    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=5)
 
-    # PALAUTETTU: DiceBCELoss
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(optimizer, T_0=10, T_mult=2, eta_min=1e-6)
+
+    swa_model = AveragedModel(model)
+    swa_start_epoch = int(num_epochs * 0.65)
+    swa_scheduler = SWALR(optimizer, swa_lr=learning_rate * 0.2)
+
     criterion = DiceBCELoss().to(device)
 
     best_val_loss = float('inf')
     patience_counter = 0
     train_losses, val_losses = [], []
+
+    log.info(f"SWA + CosineAnnealing activated. SWA starts at epoch {swa_start_epoch}.")
 
     for epoch in range(num_epochs):
         model.train()
@@ -219,34 +223,45 @@ def train_model(model, train_loader, val_loader, optimizer_type, learning_rate, 
             optimizer.step()
             ep_loss += loss.item()
 
+            if epoch < swa_start_epoch:
+                scheduler.step(epoch + x.size(0) / len(train_loader))
+
         avg_train = ep_loss / len(train_loader)
         train_losses.append(avg_train)
 
-        model.eval()
-        val_loss = 0
-        with torch.no_grad():
-            for x, y in val_loader:
-                x, y = x.to(device), y.to(device)
-                out = model(x)
-                loss = criterion(out.squeeze(1), y.float())
-                val_loss += loss.item()
-
-        avg_val = val_loss / len(val_loader)
-        val_losses.append(avg_val)
-
-        scheduler.step(avg_val)
-
-        log.info(f"Epoch {epoch + 1}: Train {avg_train:.4f}, Val {avg_val:.4f}")
-
-        if avg_val < best_val_loss:
-            best_val_loss = avg_val
-            torch.save(model.state_dict(), os.path.join(output_dir, 'unet_model_best.pth'))
-            patience_counter = 0
-            log.info("Validation loss improved. Saved model.")
+        if epoch >= swa_start_epoch:
+            swa_model.update_parameters(model)
+            swa_scheduler.step()
+            lr_now = swa_scheduler.get_last_lr()[0]
         else:
-            patience_counter += 1
-            if patience_counter >= early_stopping_patience:
-                log.info("Early stopping triggered.")
-                break
+            model.eval()
+            val_loss = 0
+            with torch.no_grad():
+                for x, y in val_loader:
+                    x, y = x.to(device), y.to(device)
+                    out = model(x)
+                    loss = criterion(out.squeeze(1), y.float())
+                    val_loss += loss.item()
+            avg_val = val_loss / len(val_loader)
+            val_losses.append(avg_val)
+
+            lr_now = optimizer.param_groups[0]['lr']
+
+            if avg_val < best_val_loss:
+                best_val_loss = avg_val
+                torch.save(model.state_dict(), os.path.join(output_dir, 'unet_model_best.pth'))
+                patience_counter = 0
+            else:
+                patience_counter += 1
+
+        log.info(f"Epoch {epoch + 1}: Train {avg_train:.4f} | LR: {lr_now:.6f}")
+
+    log.info("Updating SWA Batch Norm statistics...")
+    torch.optim.swa_utils.update_bn(train_loader, swa_model, device=device)
+
+    # KORJAUS: Tallenna SWA-kääreen alla oleva malli oikeilla avaimilla
+    swa_path = os.path.join(output_dir, 'unet_model_best.pth')
+    torch.save(swa_model.module.state_dict(), swa_path) # <-- TÄMÄ ON KORJAUS
+    log.info(f"SWA Model saved to {swa_path}")
 
     return train_losses, val_losses
