@@ -13,7 +13,7 @@ from utils.logger import setup_logging
 from data_preprocess.dataset import get_dataloaders
 from UNET_model.model import UNet, train_model
 from UNET_model.evaluation_metrics import compute_event_based_metrics, find_optimal_threshold
-from training_parameters import TRAINING_PARAMS, DATA_PARAMS, TEST_FAST_FRACTION, CV_CONFIG
+from config import TRAINING_PARAMS, DATA_PARAMS, TEST_FAST_FRACTION, CV_CONFIG
 
 if __name__ == "__main__":
 

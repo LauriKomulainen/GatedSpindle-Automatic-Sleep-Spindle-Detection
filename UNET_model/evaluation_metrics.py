@@ -6,8 +6,7 @@ import numpy as np
 from scipy.ndimage import label, find_objects
 from tqdm import tqdm
 from typing import List, Dict, Tuple
-from training_parameters import METRIC_PARAMS, DATA_PARAMS
-import torch.nn.functional as F
+from config import METRIC_PARAMS, DATA_PARAMS
 import gc
 
 log = logging.getLogger(__name__)

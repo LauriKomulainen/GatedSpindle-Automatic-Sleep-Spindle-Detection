@@ -6,7 +6,7 @@ import mne
 import numpy as np
 from typing import List, Dict, Optional, Any
 
-from training_parameters import DATA_PARAMS
+from config import DATA_PARAMS
 
 log = logging.getLogger(__name__)
 

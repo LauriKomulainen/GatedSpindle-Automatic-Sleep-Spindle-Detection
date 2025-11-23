@@ -6,7 +6,7 @@ import numpy as np
 import time
 import shutil
 from utils.logger import setup_logging
-from training_parameters import DATA_PARAMS
+from config import DATA_PARAMS
 from data_preprocess import handler, bandpassfilter, normalization
 
 setup_logging("data_handler.log")

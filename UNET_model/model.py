@@ -11,8 +11,6 @@ from tqdm import tqdm
 
 log = logging.getLogger(__name__)
 
-
-# --- SOTA LOSS: DICE + BCE ---
 class DiceBCELoss(nn.Module):
     def __init__(self, weight=None, size_average=True):
         super(DiceBCELoss, self).__init__()
@@ -25,9 +23,6 @@ class DiceBCELoss(nn.Module):
         dice_loss = 1 - (2. * intersection + smooth) / (inputs.sum() + targets.sum() + smooth)
         bce = F.binary_cross_entropy(inputs, targets, reduction='mean')
         return bce + dice_loss
-
-
-# --- PERUSKOMPONENTIT ---
 
 class AttentionBlock(nn.Module):
     def __init__(self, F_g, F_l, F_int):
