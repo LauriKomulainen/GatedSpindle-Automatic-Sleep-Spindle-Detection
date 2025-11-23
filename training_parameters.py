@@ -10,20 +10,20 @@ TRAINING_PARAMS = {
     'learning_rate': 1e-4,
     'dropout_rate': 0.2,
     'optimizer_type': 'Adam',
-    'num_epochs': 50,  # Max epochs to run
-    'early_stopping_patience': 10  # How long to wait for improvement
+    'num_epochs': 150,  # Max epochs to run
+    'early_stopping_patience': 20  # How long to wait for improvement
 }
 
 CV_CONFIG = {
     # 'folds_to_run': None,      <-- run everything
     # 'folds_to_run': [3],       <-- run only Excerpt 4 (indeksi 3)
     # 'folds_to_run': [1, 3],    <-- run 2 ja Excerpt 4
-    'folds_to_run': [3]
+    'folds_to_run': None
 }
 
 # --- Data & Preprocessing Parameters ---
 DATA_PARAMS = {
-    'fs': 200.0,  # Target sample rate (all data will be resampled to this)
+    'fs': 100.0,  # Target sample rate (all data will be resampled to this)
     'window_sec': 5.0,  # Window length in seconds
     'overlap_sec': 2.5,  # Overlap between windows
     'lowcut': 0.3,  # Bandpass filter low cut (Hz)
@@ -36,7 +36,7 @@ METRIC_PARAMS = {
     'spindle_freq_low': 11.0,  # Start frequency for defining a spindle
     'spindle_freq_high': 16.0,  # End frequency for defining a spindle
     'iou_threshold': 0.2,  # 20% overlap = True Positive
-    'min_duration_sec': 0.4,  # Min duration for a prediction to be valid
+    'min_duration_sec': 0.5,  # Min duration for a prediction to be valid
     'max_duration_sec': 3.0  # Max duration for a prediction to be valid
 }
 
