@@ -3,16 +3,158 @@
 import logging
 import torch
 import numpy as np
+import pandas as pd  # --- LISÄYS: Tarvitaan CSV-tallennukseen ---
 from scipy.ndimage import label, find_objects
 from scipy.signal import welch
 from tqdm import tqdm
 from typing import List, Dict, Tuple
 from config import METRIC_PARAMS, DATA_PARAMS
 import gc
+import os
 
 log = logging.getLogger(__name__)
 
 FIXED_BORDER_THRESH = 0.2
+
+
+# --- UUSI ANALYYSIMODUULI ALKAA ---
+
+def analyze_signal_properties(signal_segment: np.ndarray, fs: float):
+    """
+    Laskee segmentin spektriset ominaisuudet virheanalyysiä varten.
+    Palauttaa: (peak_freq, sigma_power, relative_power)
+    """
+    if len(signal_segment) < int(0.1 * fs):  # Liian lyhyt analysoitavaksi
+        return 0.0, 0.0, 0.0
+
+    # Lasketaan tehospektri (PSD)
+    nperseg = min(len(signal_segment), 256)
+    try:
+        freqs, psd = welch(signal_segment, fs, nperseg=nperseg)
+    except Exception:
+        return 0.0, 0.0, 0.0
+
+    # Etsitään huipputaajuus ja teho laajennetulla sigma-alueella (9-16 Hz)
+    idx_sigma = np.where((freqs >= 9.0) & (freqs <= 16.0))[0]
+
+    if len(idx_sigma) == 0:
+        peak_freq = 0.0
+        mean_sigma_power = 0.0
+    else:
+        peak_idx = idx_sigma[np.argmax(psd[idx_sigma])]
+        peak_freq = freqs[peak_idx]
+        mean_sigma_power = np.mean(psd[idx_sigma])
+
+    total_power = np.sum(psd)
+    relative_power = mean_sigma_power / total_power if total_power > 0 else 0.0
+
+    return peak_freq, mean_sigma_power, relative_power
+
+
+def generate_detailed_csv(true_events: List[Tuple[int, int]],
+                          pred_events: List[Tuple[int, int]],
+                          raw_signal_1d: np.ndarray,
+                          probs_1d: np.ndarray,
+                          fs: float,
+                          subject_id: str,
+                          output_dir: str):
+    """
+    Luo CSV-tiedoston, jossa on jokainen TP, FP ja FN rivinä.
+    """
+    data_rows = []
+    matched_true_indices = set()
+
+    # 1. Käydään läpi ennusteet (TP ja FP)
+    for pred_idx, pred in enumerate(pred_events):
+        start, end = pred
+        # Varmistetaan indeksit
+        start = max(0, start)
+        end = min(len(raw_signal_1d), end)
+
+        pred_signal = raw_signal_1d[start:end]
+        pred_probs = probs_1d[start:end]
+
+        # Analysoidaan signaali
+        peak_freq, sigma_power, rel_power = analyze_signal_properties(pred_signal, fs)
+        max_conf = np.max(pred_probs) if len(pred_probs) > 0 else 0.0
+
+        # Tarkistetaan osuma (IoU)
+        best_iou = 0.0
+        match_type = "FP"  # Oletus: False Positive
+        matched_true_idx = -1
+
+        for t_idx, true_ev in enumerate(true_events):
+            iou = _calculate_iou(pred, true_ev)
+            if iou > best_iou:
+                best_iou = iou
+                matched_true_idx = t_idx
+
+        if best_iou >= METRIC_PARAMS['iou_threshold']:
+            match_type = "TP"
+            if matched_true_idx != -1:
+                matched_true_indices.add(matched_true_idx)
+
+        data_rows.append({
+            'Subject': subject_id,
+            'Event_Type': match_type,
+            'Start_s': start / fs,
+            'Duration_s': (end - start) / fs,
+            'IoU': best_iou,
+            'Model_Confidence': max_conf,
+            'Peak_Freq_Hz': peak_freq,
+            'Sigma_Power': sigma_power,
+            'Relative_Power': rel_power,
+            'Notes': 'Low Confidence' if max_conf < 0.7 else ''
+        })
+
+    # 2. Käydään läpi löytymättömät (FN)
+    for t_idx, true_ev in enumerate(true_events):
+        if t_idx not in matched_true_indices:
+            start, end = true_ev
+            # Varmistetaan indeksit
+            start = max(0, start)
+            end = min(len(raw_signal_1d), end)
+
+            true_signal = raw_signal_1d[start:end]
+            peak_freq, sigma_power, rel_power = analyze_signal_properties(true_signal, fs)
+
+            # Katsotaan mikä oli mallin ennuste tällä alueella
+            avg_prob = 0.0
+            if start < len(probs_1d) and end <= len(probs_1d):
+                local_probs = probs_1d[start:end]
+                if len(local_probs) > 0:
+                    avg_prob = np.mean(local_probs)
+
+            data_rows.append({
+                'Subject': subject_id,
+                'Event_Type': 'FN',
+                'Start_s': start / fs,
+                'Duration_s': (end - start) / fs,
+                'IoU': 0.0,
+                'Model_Confidence': avg_prob,
+                'Peak_Freq_Hz': peak_freq,
+                'Sigma_Power': sigma_power,
+                'Relative_Power': rel_power,
+                'Notes': 'Missed'
+            })
+
+    # Tallennus
+    if data_rows:
+        df = pd.DataFrame(data_rows)
+        # Järjestetään sarakkeet loogiseen järjestykseen
+        cols = ['Subject', 'Event_Type', 'Start_s', 'Duration_s', 'IoU', 'Model_Confidence',
+                'Peak_Freq_Hz', 'Sigma_Power', 'Relative_Power', 'Notes']
+        df = df[cols]
+
+        filename = f"error_analysis_{subject_id}.csv"
+        csv_path = os.path.join(output_dir, filename)
+        df.to_csv(csv_path, index=False)
+        log.info(f"Detailed error analysis saved to {csv_path}")
+    else:
+        log.warning(f"No events found to analyze for subject {subject_id}")
+
+
+# --- UUSI ANALYYSIMODUULI PÄÄTTYY ---
 
 
 # --- _verify_spindle_power (Pidetään koodi, mutta ei kutsuta) ---
@@ -134,7 +276,12 @@ def _stitch_predictions_1d(all_preds: torch.Tensor, step_samples: int) -> np.nda
     return (stitched_sum / stitched_weights).numpy()
 
 
-def compute_event_based_metrics(model, data_loader, threshold: float) -> Dict[str, float]:
+# --- PÄIVITETTY FUNKTIO: Lisätty subject_id ja output_dir parametrit ---
+def compute_event_based_metrics(model,
+                                data_loader,
+                                threshold: float,
+                                subject_id: str = "unknown",
+                                output_dir: str = ".") -> Dict[str, float]:
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     if torch.backends.mps.is_available(): device = torch.device('mps')
 
@@ -149,7 +296,7 @@ def compute_event_based_metrics(model, data_loader, threshold: float) -> Dict[st
     raw_signal_list = []
 
     with torch.no_grad():
-        for inputs, masks in tqdm(data_loader, desc="Evaluating Events"):
+        for inputs, masks in tqdm(data_loader, desc=f"Evaluating Events ({subject_id})"):
             inputs = inputs.to(device)
 
             # TTA
@@ -164,6 +311,7 @@ def compute_event_based_metrics(model, data_loader, threshold: float) -> Dict[st
 
             all_probs_list.append(probs_avg.cpu().float())
             all_masks_list.append(masks.cpu().float())
+            # CH1 is raw signal context
             raw_signal_list.append(inputs[:, 0, :].cpu().float())
 
     all_probs_tensor = torch.cat(all_probs_list, dim=0)
@@ -186,6 +334,22 @@ def compute_event_based_metrics(model, data_loader, threshold: float) -> Dict[st
     true_events = _find_events_dual_thresh(mask_1d_bool.astype(float), 0.5, 0.1, fs, raw_signal=None)
 
     log.info(f"Found {len(true_events)} true events and {len(pred_events)} predicted events.")
+
+    # --- UUSI: GENEROI CSV-ANALYYSI ---
+    log.info(f"Generating error analysis CSV for {subject_id}...")
+    try:
+        generate_detailed_csv(
+            true_events=true_events,
+            pred_events=pred_events,
+            raw_signal_1d=raw_1d_full,
+            probs_1d=prob_1d_full,
+            fs=fs,
+            subject_id=subject_id,
+            output_dir=output_dir
+        )
+    except Exception as e:
+        log.error(f"Failed to generate error analysis CSV: {e}")
+    # -----------------------------------
 
     total_tp, total_fp = 0, 0
     matched_true_indices = set()

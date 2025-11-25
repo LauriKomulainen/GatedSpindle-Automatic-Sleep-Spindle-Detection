@@ -78,6 +78,7 @@ if __name__ == "__main__":
         log.info("Initializing U-Net model (from scratch)...")
         model = UNet(dropout_rate=params['dropout_rate'])
 
+        # Koulutus (palauttaa parhaan mallin 'unet_model_best.pth' tiedostoon)
         train_losses, val_losses = train_model(
             model=model,
             train_loader=train_loader,
@@ -90,6 +91,7 @@ if __name__ == "__main__":
             fs=DATA_PARAMS['fs']
         )
 
+        # Ladataan se malli, joka osoittautui parhaaksi (SWA tai Single Best)
         best_model_path = os.path.join(fold_output_dir, 'unet_model_best.pth')
         if os.path.exists(best_model_path):
             log.info(f"Loading best model ('{best_model_path}') for evaluation.")
@@ -114,7 +116,16 @@ if __name__ == "__main__":
         optimal_thresh = find_optimal_threshold(model, val_loader)
 
         log.info(f"Computing final test metrics using optimal threshold: {optimal_thresh:.2f}")
-        metrics = compute_event_based_metrics(model, test_loader, threshold=optimal_thresh)
+
+        # --- PÄIVITETTY KUTSU (CSV-analyysi mukana) ---
+        metrics = compute_event_based_metrics(
+            model,
+            test_loader,
+            threshold=optimal_thresh,
+            subject_id=test_subject_id[0],
+            output_dir=fold_output_dir
+        )
+        # ---------------------------------------------
 
         log.info(f"---FOLD {fold_name} COMPLETE ---")
 

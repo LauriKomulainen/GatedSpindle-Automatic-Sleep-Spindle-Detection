@@ -10,8 +10,8 @@ TRAINING_PARAMS = {
     'learning_rate': 1e-4,
     'dropout_rate': 0.2,
     'optimizer_type': 'Adam',
-    'num_epochs': 100,
-    'early_stopping_patience': 15
+    'num_epochs': 150,
+    'early_stopping_patience': 25
 }
 
 CV_CONFIG = {

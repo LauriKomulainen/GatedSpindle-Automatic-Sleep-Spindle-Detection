@@ -12,7 +12,7 @@ from torch.optim.swa_utils import AveragedModel, SWALR
 log = logging.getLogger(__name__)
 
 
-# --- MALLILUOKAT (DiceBCE, CBAM, ConvBlock, DecoderBlock, PositionalEncoding, UNet) TÄSSÄ ---
+# --- MALLILUOKAT (DiceBCE, CBAM, ConvBlock, DecoderBlock, PositionalEncoding, UNet) ---
 
 class DiceBCELoss(nn.Module):
     def __init__(self, smooth=1.0):
@@ -175,7 +175,7 @@ class UNet(nn.Module):
         return self.final_conv(d3)
 
 
-# --- SWA TRAINING LOOP WITH COSINE ANNEALING (Korjattu tallennus) ---
+# --- SWA TRAINING LOOP WITH INTELLIGENT MODEL SELECTION ---
 
 def train_model(model, train_loader, val_loader, optimizer_type, learning_rate, num_epochs, early_stopping_patience,
                 output_dir, fs):
@@ -195,7 +195,7 @@ def train_model(model, train_loader, val_loader, optimizer_type, learning_rate, 
     criterion = DiceBCELoss().to(device)
 
     best_val_loss = float('inf')
-    patience_counter = 0
+    best_single_epoch = -1
     train_losses, val_losses = [], []
 
     log.info(f"SWA + CosineAnnealing activated. SWA starts at epoch {swa_start_epoch}.")
@@ -247,21 +247,44 @@ def train_model(model, train_loader, val_loader, optimizer_type, learning_rate, 
 
             lr_now = optimizer.param_groups[0]['lr']
 
+            # Tallenna paras yksittäinen malli
             if avg_val < best_val_loss:
                 best_val_loss = avg_val
+                best_single_epoch = epoch
                 torch.save(model.state_dict(), os.path.join(output_dir, 'unet_model_best.pth'))
-                patience_counter = 0
-            else:
-                patience_counter += 1
+                # Emme käytä break-komentoa (patience), jotta SWA ehtii käynnistyä
 
         log.info(f"Epoch {epoch + 1}: Train {avg_train:.4f} | LR: {lr_now:.6f}")
 
     log.info("Updating SWA Batch Norm statistics...")
     torch.optim.swa_utils.update_bn(train_loader, swa_model, device=device)
 
-    # KORJAUS: Tallenna SWA-kääreen alla oleva malli oikeilla avaimilla
-    swa_path = os.path.join(output_dir, 'unet_model_best.pth')
-    torch.save(swa_model.module.state_dict(), swa_path) # <-- TÄMÄ ON KORJAUS
+    # 1. Tallenna SWA-malli erikseen
+    swa_path = os.path.join(output_dir, 'unet_model_swa.pth')
+    torch.save(swa_model.module.state_dict(), swa_path)
     log.info(f"SWA Model saved to {swa_path}")
+
+    # 2. Laske SWA-mallin validointi-loss
+    log.info("Validating SWA model performance against best single model...")
+    swa_model.eval()
+    swa_val_loss = 0
+    with torch.no_grad():
+        for x, y in val_loader:
+            x, y = x.to(device), y.to(device)
+            out = swa_model(x)
+            loss = criterion(out.squeeze(1), y.float())
+            swa_val_loss += loss.item()
+
+    avg_swa_val = swa_val_loss / len(val_loader)
+
+    log.info(f"Best Single Model (Epoch {best_single_epoch + 1}) Loss: {best_val_loss:.5f}")
+    log.info(f"SWA Final Model Loss: {avg_swa_val:.5f}")
+
+    # 3. Päätä kumpi on parempi (BEST vs SWA)
+    if avg_swa_val < best_val_loss:
+        log.info(">>> SWA Model IS BETTER. Overwriting 'unet_model_best.pth' with SWA model.")
+        torch.save(swa_model.module.state_dict(), os.path.join(output_dir, 'unet_model_best.pth'))
+    else:
+        log.info(">>> SWA Model is NOT better. Keeping the best single epoch model as 'unet_model_best.pth'.")
 
     return train_losses, val_losses
