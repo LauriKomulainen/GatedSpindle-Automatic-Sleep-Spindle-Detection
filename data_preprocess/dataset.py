@@ -20,12 +20,6 @@ def butter_bandpass_filter(data, lowcut, highcut, fs, order=4):
     return y
 
 
-def teager_energy_operator(signal):
-    teo = signal[1:-1] ** 2 - signal[:-2] * signal[2:]
-    teo_padded = np.pad(teo, (1, 1), mode='constant', constant_values=0)
-    return np.clip(teo_padded, 0, None)
-
-
 class RandomAugment1D:
     def __init__(self, p=0.5):
         self.p = p
@@ -34,7 +28,7 @@ class RandomAugment1D:
         if random.random() < self.p:
             gain = random.uniform(0.8, 1.2)
             signal = signal * gain
-            noise_level = random.uniform(0.0, 0.02)  # Vähemmän kohinaa
+            noise_level = random.uniform(0.0, 0.02)
             noise = torch.randn_like(signal) * noise_level
             signal = signal + noise
         return signal
@@ -47,7 +41,7 @@ class SpindleDataset(Dataset):
         self.x_mmap = np.load(x_1d_path, mmap_mode='r')
         self.y_mmap = np.load(y_1d_path, mmap_mode='r')
         self.length = self.x_mmap.shape[0]
-        self.fs = 100.0
+        self.fs = 200.0
         self.augment = augment
         self.augmentor = RandomAugment1D(p=0.5)
 
@@ -57,44 +51,54 @@ class SpindleDataset(Dataset):
     def __getitem__(self, idx):
         raw_signal = np.array(self.x_mmap[idx], dtype=np.float32)
 
-        # CH1: Raw (Context)
+        # CH1: Raw
         ch1 = torch.tensor(raw_signal, dtype=torch.float32).unsqueeze(0)
 
-        # CH2: Sigma (Focus)
-        # Ei enää ikkunakohtaista normalisointia -> hiljaisuus pysyy hiljaisuutena!
+        # CH2: Sigma
         sigma_signal = butter_bandpass_filter(raw_signal, 11.0, 16.0, self.fs, order=4)
         ch2 = torch.tensor(sigma_signal.copy(), dtype=torch.float32).unsqueeze(0)
 
-        # CH3: TEO (Energy)
-        teo_signal = teager_energy_operator(sigma_signal)
-        ch3 = torch.tensor(teo_signal.copy(), dtype=torch.float32).unsqueeze(0)
-
-        # Yhdistetään 3 kanavaa
-        signal_tensor = torch.cat([ch1, ch2, ch3], dim=0)
+        # Yhdistetään 2 kanavaa
+        signal_tensor = torch.cat([ch1, ch2], dim=0)
 
         if self.augment:
             signal_tensor = self.augmentor(signal_tensor)
 
-        # Maski (Float32 fix)
+        # Maski
         mask_1d = np.array(self.y_mmap[idx], dtype=np.float32)
         mask_tensor = torch.tensor(mask_1d, dtype=torch.float32)
 
-        return signal_tensor, mask_tensor
+        # Gating Label
+        has_spindle = 1.0 if np.max(mask_1d) > 0.5 else 0.0
+        label_tensor = torch.tensor(has_spindle, dtype=torch.float32).unsqueeze(0)
+
+        return signal_tensor, mask_tensor, label_tensor
 
 
 def get_dataloaders(processed_data_dir: str, batch_size: int, train_subject_ids: list, val_subject_ids: list,
                     test_subject_ids: list, use_fraction: float = 1.0):
+    # Varmistetaan polun olemassaolo
+    if not os.path.exists(processed_data_dir):
+        log.error(f"CRITICAL: Data directory not found: {processed_data_dir}")
+        # Palautetaan tyhjät loaderit kaatumisen sijaan, jos polku on väärä
+        empty = DataLoader([], batch_size=batch_size)
+        return empty, empty, empty
+
     log.info(f"Training data: {train_subject_ids}")
     log.info(f"Validation data: {val_subject_ids}")
     log.info(f"Test data: {test_subject_ids}")
 
     datasets = {}
     all_subjects = list(set(train_subject_ids + val_subject_ids + test_subject_ids))
+
     for subject_id in all_subjects:
         x_1d_path = os.path.join(processed_data_dir, f"{subject_id}_X_1D.npy")
         y_1d_path = os.path.join(processed_data_dir, f"{subject_id}_Y_1D.npy")
+
         if not (os.path.exists(x_1d_path) and os.path.exists(y_1d_path)):
+            log.warning(f"Files not found for {subject_id} in {processed_data_dir}")
             continue
+
         datasets[subject_id] = SpindleDataset(x_1d_path, y_1d_path, augment=False)
 
     train_list = []
@@ -104,10 +108,10 @@ def get_dataloaders(processed_data_dir: str, batch_size: int, train_subject_ids:
             train_list.append(ds)
 
     train_ds = ConcatDataset(train_list) if train_list else []
-    val_ds = ConcatDataset([datasets[sid] for sid in val_subject_ids if sid in datasets])
-    test_ds = ConcatDataset([datasets[sid] for sid in test_subject_ids if sid in datasets])
+    val_ds = ConcatDataset([datasets[sid] for sid in val_subject_ids if sid in datasets]) if val_subject_ids else []
+    test_ds = ConcatDataset([datasets[sid] for sid in test_subject_ids if sid in datasets]) if test_subject_ids else []
 
-    if use_fraction < 1.0:
+    if use_fraction < 1.0 and len(train_ds) > 0:
         def get_subset(ds):
             if len(ds) == 0: return ds
             indices = random.sample(range(len(ds)), int(len(ds) * use_fraction))
@@ -118,5 +122,11 @@ def get_dataloaders(processed_data_dir: str, batch_size: int, train_subject_ids:
         test_ds = get_subset(test_ds)
 
     common = {'batch_size': batch_size, 'num_workers': 0, 'pin_memory': True}
-    return DataLoader(train_ds, shuffle=True, **common), DataLoader(val_ds, shuffle=False, **common), DataLoader(
-        test_ds, shuffle=False, **common)
+
+    # --- KORJAUS: Estetään RandomSamplerin kaatuminen tyhjällä datasetillä ---
+    # Jos train_ds on tyhjä (kuten inferenssissä), shuffle täytyy olla False.
+    train_shuffle = True if len(train_ds) > 0 else False
+
+    return (DataLoader(train_ds, shuffle=train_shuffle, **common),
+            DataLoader(val_ds, shuffle=False, **common),
+            DataLoader(test_ds, shuffle=False, **common))

@@ -3,16 +3,11 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-import math
 import logging
-import numpy as np
 import os
 from torch.optim.swa_utils import AveragedModel, SWALR
 
 log = logging.getLogger(__name__)
-
-
-# --- MALLILUOKAT (DiceBCE, CBAM, ConvBlock, DecoderBlock, PositionalEncoding, UNet) ---
 
 class DiceBCELoss(nn.Module):
     def __init__(self, smooth=1.0):
@@ -28,50 +23,6 @@ class DiceBCELoss(nn.Module):
         return 0.5 * bce + 0.5 * dice_loss
 
 
-class ChannelAttention(nn.Module):
-    def __init__(self, in_planes, ratio=8):
-        super(ChannelAttention, self).__init__()
-        self.avg_pool = nn.AdaptiveAvgPool1d(1)
-        self.max_pool = nn.AdaptiveMaxPool1d(1)
-        self.fc1 = nn.Conv1d(in_planes, in_planes // ratio, 1, bias=False)
-        self.relu1 = nn.ReLU()
-        self.fc2 = nn.Conv1d(in_planes // ratio, in_planes, 1, bias=False)
-        self.sigmoid = nn.Sigmoid()
-
-    def forward(self, x):
-        avg_out = self.fc2(self.relu1(self.fc1(self.avg_pool(x))))
-        max_out = self.fc2(self.relu1(self.fc1(self.max_pool(x))))
-        out = avg_out + max_out
-        return self.sigmoid(out)
-
-
-class SpatialAttention(nn.Module):
-    def __init__(self, kernel_size=7):
-        super(SpatialAttention, self).__init__()
-        padding = 3 if kernel_size == 7 else 1
-        self.conv1 = nn.Conv1d(2, 1, kernel_size, padding=padding, bias=False)
-        self.sigmoid = nn.Sigmoid()
-
-    def forward(self, x):
-        avg_out = torch.mean(x, dim=1, keepdim=True)
-        max_out, _ = torch.max(x, dim=1, keepdim=True)
-        x = torch.cat([avg_out, max_out], dim=1)
-        x = self.conv1(x)
-        return self.sigmoid(x)
-
-
-class CBAMBlock(nn.Module):
-    def __init__(self, in_planes, ratio=8, kernel_size=7):
-        super(CBAMBlock, self).__init__()
-        self.ca = ChannelAttention(in_planes, ratio)
-        self.sa = SpatialAttention(kernel_size)
-
-    def forward(self, x):
-        x = x * self.ca(x)
-        x = x * self.sa(x)
-        return x
-
-
 class ConvBlock(nn.Module):
     def __init__(self, in_channels, out_channels, kernel_size=7):
         super(ConvBlock, self).__init__()
@@ -81,7 +32,8 @@ class ConvBlock(nn.Module):
         self.relu = nn.ReLU(inplace=True)
         self.conv2 = nn.Conv1d(out_channels, out_channels, kernel_size, padding=padding)
         self.bn2 = nn.InstanceNorm1d(out_channels, affine=True)
-        self.cbam = CBAMBlock(out_channels)
+
+        # Yksinkertaistettu: Poistettu raskas CBAM, luotetaan Gatingiin
         self.shortcut = nn.Identity()
         if in_channels != out_channels:
             self.shortcut = nn.Sequential(
@@ -96,7 +48,6 @@ class ConvBlock(nn.Module):
         out = self.relu(out)
         out = self.conv2(out)
         out = self.bn2(out)
-        out = self.cbam(out)
         out += residual
         out = self.relu(out)
         return out
@@ -116,66 +67,75 @@ class DecoderBlock(nn.Module):
         return self.conv(x)
 
 
-class PositionalEncoding(nn.Module):
-    def __init__(self, d_model, max_len=5000):
-        super(PositionalEncoding, self).__init__()
-        pe = torch.zeros(max_len, d_model)
-        position = torch.arange(0, max_len, dtype=torch.float).unsqueeze(1)
-        div_term = torch.exp(torch.arange(0, d_model, 2).float() * (-math.log(10000.0) / d_model))
-        pe[:, 0::2] = torch.sin(position * div_term)
-        pe[:, 1::2] = torch.cos(position * div_term)
-        pe = pe.unsqueeze(0).transpose(0, 1)
-        self.register_buffer('pe', pe)
-
-    def forward(self, x):
-        return x + self.pe[:x.size(0), :]
-
-
-class UNet(nn.Module):
+class GatedUNet(nn.Module):
     def __init__(self, dropout_rate=0.2):
-        super(UNet, self).__init__()
-        self.input_norm = nn.InstanceNorm1d(3, affine=True)
-        self.enc1 = ConvBlock(3, 32)
+        super(GatedUNet, self).__init__()
+        self.input_norm = nn.InstanceNorm1d(2, affine=True)
+
+        # Encoder
+        self.enc1 = ConvBlock(2, 32)
         self.pool1 = nn.MaxPool1d(2)
         self.drop1 = nn.Dropout(dropout_rate)
+
         self.enc2 = ConvBlock(32, 64)
         self.pool2 = nn.MaxPool1d(2)
         self.drop2 = nn.Dropout(dropout_rate)
+
         self.enc3 = ConvBlock(64, 128)
         self.pool3 = nn.MaxPool1d(2)
         self.drop3 = nn.Dropout(dropout_rate)
-        self.d_model = 128
-        self.pos_encoder = PositionalEncoding(d_model=self.d_model)
-        encoder_layer = nn.TransformerEncoderLayer(d_model=self.d_model, nhead=4, dim_feedforward=256,
-                                                   dropout=dropout_rate, activation='gelu')
-        self.transformer = nn.TransformerEncoder(encoder_layer, num_layers=3)
-        self.dec1 = DecoderBlock(256, 64)
-        self.dec2 = DecoderBlock(128, 32)
-        self.dec3 = DecoderBlock(64, 32)
+
+        # Bottleneck (Transformer poistettu -> yksinkertaisempi ja vakaampi)
+        self.bottleneck = ConvBlock(128, 256)
+
+        # --- UUTTA: CLASSIFICATION HEAD (GATING) ---
+        # Tämä päättää, onko ikkunassa ylipäätään mitään
+        self.global_pool = nn.AdaptiveAvgPool1d(1)
+        self.gate_fc = nn.Sequential(
+            nn.Linear(256, 64),
+            nn.ReLU(),
+            nn.Dropout(0.3),
+            nn.Linear(64, 1)
+            # Huom: Ei Sigmoidia tässä, käytetään BCEWithLogitsLossia koulutuksessa
+        )
+
+        # Decoder
+        self.dec1 = DecoderBlock(256 + 128, 128)  # Skip connection concatenation sizes adjusted
+        self.dec2 = DecoderBlock(128 + 64, 64)
+        self.dec3 = DecoderBlock(64 + 32, 32)
+
         self.final_conv = nn.Conv1d(32, 1, kernel_size=1)
 
     def forward(self, x):
         x = self.input_norm(x)
+
         e1 = self.enc1(x)
         p1 = self.pool1(e1)
         p1 = self.drop1(p1)
+
         e2 = self.enc2(p1)
         p2 = self.pool2(e2)
         p2 = self.drop2(p2)
+
         e3 = self.enc3(p2)
         p3 = self.pool3(e3)
         p3 = self.drop3(p3)
-        bn = p3.permute(2, 0, 1)
-        bn = self.pos_encoder(bn)
-        bn = self.transformer(bn)
-        bn = bn.permute(1, 2, 0)
-        d1 = self.dec1(bn, e3)
+
+        b = self.bottleneck(p3)  # [Batch, 256, L/8]
+
+        # --- GATING SIGNAL ---
+        gate_logits = self.gate_fc(self.global_pool(b).view(b.size(0), -1))  # [Batch, 1]
+
+        # Decoder (Standard U-Net path)
+        d1 = self.dec1(b, e3)
         d2 = self.dec2(d1, e2)
         d3 = self.dec3(d2, e1)
-        return self.final_conv(d3)
+        mask_logits = self.final_conv(d3)
+
+        return mask_logits, gate_logits
 
 
-# --- SWA TRAINING LOOP WITH INTELLIGENT MODEL SELECTION ---
+# --- TRAIN LOOP ---
 
 def train_model(model, train_loader, val_loader, optimizer_type, learning_rate, num_epochs, early_stopping_patience,
                 output_dir, fs):
@@ -189,34 +149,37 @@ def train_model(model, train_loader, val_loader, optimizer_type, learning_rate, 
     scheduler = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(optimizer, T_0=10, T_mult=2, eta_min=1e-6)
 
     swa_model = AveragedModel(model)
-    swa_start_epoch = int(num_epochs * 0.65)
-    swa_scheduler = SWALR(optimizer, swa_lr=learning_rate * 0.2)
+    swa_start_epoch = int(num_epochs * 0.60)
+    swa_scheduler = SWALR(optimizer, swa_lr=learning_rate * 0.1)
 
-    criterion = DiceBCELoss().to(device)
+    criterion_seg = DiceBCELoss().to(device)
+    criterion_cls = nn.BCEWithLogitsLoss().to(device)  # Luokittelulle
 
     best_val_loss = float('inf')
     best_single_epoch = -1
     train_losses, val_losses = [], []
 
-    log.info(f"SWA + CosineAnnealing activated. SWA starts at epoch {swa_start_epoch}.")
+    log.info(f"Training GATED U-Net. SWA starts at epoch {swa_start_epoch}.")
 
     for epoch in range(num_epochs):
         model.train()
         ep_loss = 0
-        for x, y in tqdm(train_loader, desc=f"Epoch {epoch + 1}"):
-            x, y = x.to(device), y.to(device)
+
+        # HUOM: Nyt dataloader palauttaa 3 asiaa
+        for x, y_mask, y_label in tqdm(train_loader, desc=f"Epoch {epoch + 1}"):
+            x, y_mask, y_label = x.to(device), y_mask.to(device), y_label.to(device)
             optimizer.zero_grad()
 
-            if np.random.random() < 0.3:
-                lam = np.random.beta(0.4, 0.4)
-                index = torch.randperm(x.size(0)).to(device)
-                mixed_x = lam * x + (1 - lam) * x[index, :]
-                out = model(mixed_x)
-                y_a, y_b = y, y[index]
-                loss = lam * criterion(out.squeeze(1), y_a.float()) + (1 - lam) * criterion(out.squeeze(1), y_b.float())
-            else:
-                out = model(x)
-                loss = criterion(out.squeeze(1), y.float())
+            mask_logits, gate_logits = model(x)
+
+            # 1. Segmentaatio loss
+            loss_seg = criterion_seg(mask_logits.squeeze(1), y_mask.float())
+
+            # 2. Gating loss (Global classification)
+            loss_cls = criterion_cls(gate_logits, y_label)
+
+            # Yhdistetty loss: 60% segmentaatio, 40% luokittelu
+            loss = 0.6 * loss_seg + 0.4 * loss_cls
 
             loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
@@ -237,54 +200,50 @@ def train_model(model, train_loader, val_loader, optimizer_type, learning_rate, 
             model.eval()
             val_loss = 0
             with torch.no_grad():
-                for x, y in val_loader:
-                    x, y = x.to(device), y.to(device)
-                    out = model(x)
-                    loss = criterion(out.squeeze(1), y.float())
-                    val_loss += loss.item()
+                for x, y_mask, y_label in val_loader:
+                    x, y_mask, y_label = x.to(device), y_mask.to(device), y_label.to(device)
+                    mask_logits, gate_logits = model(x)
+
+                    l_seg = criterion_seg(mask_logits.squeeze(1), y_mask.float())
+                    l_cls = criterion_cls(gate_logits, y_label)
+
+                    val_loss += (0.6 * l_seg + 0.4 * l_cls).item()
+
             avg_val = val_loss / len(val_loader)
             val_losses.append(avg_val)
 
             lr_now = optimizer.param_groups[0]['lr']
 
-            # Tallenna paras yksittäinen malli
             if avg_val < best_val_loss:
                 best_val_loss = avg_val
                 best_single_epoch = epoch
                 torch.save(model.state_dict(), os.path.join(output_dir, 'unet_model_best.pth'))
-                # Emme käytä break-komentoa (patience), jotta SWA ehtii käynnistyä
 
         log.info(f"Epoch {epoch + 1}: Train {avg_train:.4f} | LR: {lr_now:.6f}")
 
     log.info("Updating SWA Batch Norm statistics...")
+    # SWA update needs custom loader loop usually, but standard handles simple inputs.
+    # We just run a quick pass to update BN if needed or skip strict update logic for simplicity here.
     torch.optim.swa_utils.update_bn(train_loader, swa_model, device=device)
 
-    # 1. Tallenna SWA-malli erikseen
     swa_path = os.path.join(output_dir, 'unet_model_swa.pth')
     torch.save(swa_model.module.state_dict(), swa_path)
-    log.info(f"SWA Model saved to {swa_path}")
 
-    # 2. Laske SWA-mallin validointi-loss
-    log.info("Validating SWA model performance against best single model...")
+    # Validation logic for SWA
     swa_model.eval()
     swa_val_loss = 0
     with torch.no_grad():
-        for x, y in val_loader:
-            x, y = x.to(device), y.to(device)
-            out = swa_model(x)
-            loss = criterion(out.squeeze(1), y.float())
-            swa_val_loss += loss.item()
+        for x, y_mask, y_label in val_loader:
+            x, y_mask, y_label = x.to(device), y_mask.to(device), y_label.to(device)
+            m_log, g_log = swa_model(x)
+            l_seg = criterion_seg(m_log.squeeze(1), y_mask.float())
+            l_cls = criterion_cls(g_log, y_label)
+            swa_val_loss += (0.6 * l_seg + 0.4 * l_cls).item()
 
     avg_swa_val = swa_val_loss / len(val_loader)
 
-    log.info(f"Best Single Model (Epoch {best_single_epoch + 1}) Loss: {best_val_loss:.5f}")
-    log.info(f"SWA Final Model Loss: {avg_swa_val:.5f}")
-
-    # 3. Päätä kumpi on parempi (BEST vs SWA)
     if avg_swa_val < best_val_loss:
-        log.info(">>> SWA Model IS BETTER. Overwriting 'unet_model_best.pth' with SWA model.")
+        log.info(">>> SWA Model IS BETTER. Overwriting 'unet_model_best.pth'.")
         torch.save(swa_model.module.state_dict(), os.path.join(output_dir, 'unet_model_best.pth'))
-    else:
-        log.info(">>> SWA Model is NOT better. Keeping the best single epoch model as 'unet_model_best.pth'.")
 
     return train_losses, val_losses

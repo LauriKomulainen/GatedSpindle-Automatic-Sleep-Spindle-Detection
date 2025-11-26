@@ -3,20 +3,31 @@
 import gc
 import os
 import torch
-import matplotlib.pyplot as plt
 import logging
+import random
 import numpy as np
 from datetime import datetime
 from collections import defaultdict
 
 from utils.logger import setup_logging
 from data_preprocess.dataset import get_dataloaders
-from UNET_model.model import UNet, train_model
+from UNET_model.model import GatedUNet, train_model
 from UNET_model.evaluation_metrics import compute_event_based_metrics, find_optimal_threshold
-from config import TRAINING_PARAMS, DATA_PARAMS, TEST_FAST_FRACTION, CV_CONFIG
+from config import TRAINING_PARAMS, DATA_PARAMS, TEST_FAST_FRACTION, CV_CONFIG, INFERENCE_PARAMS
+
+def set_seed(seed=1):
+    """Lukitsee kaikki satunnaislukugeneraattorit."""
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
+    print(f"Random Seed set to: {seed}")
 
 if __name__ == "__main__":
-
+    set_seed(1)
     setup_logging("training.log")
     log = logging.getLogger(__name__)
 
@@ -28,8 +39,7 @@ if __name__ == "__main__":
         params['num_epochs'] = 1
         params['early_stopping_patience'] = 5
 
-    log.info("Starting U-Net Training: Leave-One-Subject-Out (LOSO)")
-    log.info(f"Using hyperparameters: {params}")
+    log.info("Starting GATED U-Net Training: Leave-One-Subject-Out (LOSO)")
 
     result_dir = "model_reports"
     timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
@@ -40,13 +50,7 @@ if __name__ == "__main__":
     all_metrics = defaultdict(list)
 
     selected_folds = CV_CONFIG['folds_to_run']
-
-    if selected_folds is None:
-        folds_to_iterate = range(len(all_subjects))
-        log.info(f"Starting ALL {len(all_subjects)}-Fold LOSO Cross-Validation")
-    else:
-        folds_to_iterate = selected_folds
-        log.info(f"Starting SPECIFIC folds only: {folds_to_iterate}")
+    folds_to_iterate = selected_folds if selected_folds else range(len(all_subjects))
 
     for k in folds_to_iterate:
         test_subject_id = [all_subjects[k]]
@@ -55,12 +59,10 @@ if __name__ == "__main__":
 
         fold_name = f"Fold_{k + 1}_(Test={test_subject_id[0]})"
         log.info(f"STARTING FOLD: {fold_name}")
-        log.info("=" * 80)
 
         fold_output_dir = os.path.join(output_dir, fold_name)
         os.makedirs(fold_output_dir, exist_ok=True)
 
-        log.info("Loading and splitting data for this fold...")
         try:
             train_loader, val_loader, test_loader = get_dataloaders(
                 processed_data_dir="./diagnostics_plots/processed_data",
@@ -72,13 +74,10 @@ if __name__ == "__main__":
             )
         except Exception as e:
             log.error(f"Data loading failed: {e}")
-            log.error("Make sure 'data_handler.py' has been run successfully and 'processed_data' is not empty.")
             continue
 
-        log.info("Initializing U-Net model (from scratch)...")
-        model = UNet(dropout_rate=params['dropout_rate'])
+        model = GatedUNet(dropout_rate=params['dropout_rate'])
 
-        # Koulutus (palauttaa parhaan mallin 'unet_model_best.pth' tiedostoon)
         train_losses, val_losses = train_model(
             model=model,
             train_loader=train_loader,
@@ -91,63 +90,49 @@ if __name__ == "__main__":
             fs=DATA_PARAMS['fs']
         )
 
-        # Ladataan se malli, joka osoittautui parhaaksi (SWA tai Single Best)
         best_model_path = os.path.join(fold_output_dir, 'unet_model_best.pth')
         if os.path.exists(best_model_path):
-            log.info(f"Loading best model ('{best_model_path}') for evaluation.")
             model.load_state_dict(torch.load(best_model_path))
+
+        # --- UUSI LOGIIKKA: THRESHOLD VALINTA ---
+        fixed_thresh = INFERENCE_PARAMS['fixed_threshold']
+
+        if fixed_thresh is not None:
+            log.info(f"Using FIXED threshold from config: {fixed_thresh}")
+            optimal_thresh = fixed_thresh
         else:
-            log.warning("No best model found. Using the last model state for evaluation.")
+            log.info("Finding optimal decision threshold using validation data...")
+            optimal_thresh = find_optimal_threshold(model, val_loader)
+            log.info(f"Optimal threshold determined: {optimal_thresh:.2f}")
 
-        if train_losses and val_losses:
-            plt.figure()
-            plt.plot(train_losses, label='Training Loss')
-            plt.plot(val_losses, label='Validation Loss')
-            plt.title(f'Loss Progression - {fold_name}')
-            plt.xlabel('Epochs')
-            plt.ylabel('Tversky Loss')
-            plt.legend()
-            loss_plot_path = os.path.join(fold_output_dir, 'loss_progression.png')
-            plt.savefig(loss_plot_path, dpi=300)
-            plt.close()
-            log.info(f"Loss curve saved: {loss_plot_path}")
+        log.info(f"Computing metrics (Threshold: {optimal_thresh}, Power Check: {INFERENCE_PARAMS['use_power_check']})")
 
-        log.info("Finding optimal decision threshold using validation data...")
-        optimal_thresh = find_optimal_threshold(model, val_loader)
-
-        log.info(f"Computing final test metrics using optimal threshold: {optimal_thresh:.2f}")
-
-        # --- PÄIVITETTY KUTSU (CSV-analyysi mukana) ---
+        # --- VÄLITETÄÄN POWER CHECK ASETUS ---
         metrics = compute_event_based_metrics(
             model,
             test_loader,
             threshold=optimal_thresh,
             subject_id=test_subject_id[0],
-            output_dir=fold_output_dir
+            output_dir=fold_output_dir,
+            use_power_check=INFERENCE_PARAMS['use_power_check']
         )
-        # ---------------------------------------------
 
-        log.info(f"---FOLD {fold_name} COMPLETE ---")
-
-        log.info("Cleaning up memory...")
-        del model
-        del train_loader, val_loader, test_loader
+        log.info(f"Fold Complete.")
+        del model, train_loader, val_loader, test_loader
         torch.cuda.empty_cache()
         gc.collect()
 
-        log.info(f"Test results for patient {test_subject_id[0]}:\n")
+        log.info(f"Results for {test_subject_id[0]}:\n")
         for key, value in metrics.items():
             log.info(f"  {key}: {value:.4f}")
             all_metrics[key].append(value)
 
-        log.info("Saving final prediction images from TEST data...")
-
+    log.info("=" * 80)
     log.info("FULL LOSO CROSS-VALIDATION COMPLETE")
-    log.info(f"Final average results across all {len(all_subjects)} folds:")
-
-    for key, values in all_metrics.items():
-        mean = np.mean(values)
-        std = np.std(values)
-        log.info(f"Average {key}: {mean:.4f} (± {std:.4f})")
+    if len(all_metrics) > 0:
+        for key, values in all_metrics.items():
+            mean = np.mean(values)
+            std = np.std(values)
+            log.info(f"Average {key}: {mean:.4f} (± {std:.4f})")
 
     log.info(f"All results saved to directory: {output_dir}")

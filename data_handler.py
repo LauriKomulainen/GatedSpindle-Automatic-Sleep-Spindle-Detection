@@ -39,10 +39,12 @@ def segment_data(raw, window_sec: float, overlap_sec: float):
                 vote_mask[start_sample:end_sample] += 1.0
 
     # Soft labels: 0.0 (ei kukaan), 0.5 (yksi), 1.0 (molemmat)
-    final_mask = np.clip(vote_mask / 2.0, 0.0, 1.0).astype(np.float32)
+        # --- MUUTOS: HARD UNION ---
+        # Jos vote_mask > 0 (eli 1 tai 2 asiantuntijaa), asetetaan arvoksi 1.0.
+        # Tämä maksimoi Recallin hyväksymällä kaikki mahdolliset spindelit.
+        final_mask = np.clip(vote_mask, 0.0, 1.0).astype(np.float32)
 
-    log.info(f"Created SOFT LABEL mask. Values: {np.unique(final_mask)}")
-
+        log.info(f"Created HARD UNION mask. Values: {np.unique(final_mask)}")
     all_windows, all_masks = [], []
     for start in range(0, len(signal) - window_samples, step_samples):
         end = start + window_samples
