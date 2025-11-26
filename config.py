@@ -6,7 +6,7 @@ Central configuration file for all training hyperparameters and data settings.
 
 # --- Training Hyperparameters ---
 TRAINING_PARAMS = {
-    'batch_size': 32,
+    'batch_size': 16,
     'learning_rate': 1e-4,
     'dropout_rate': 0.2,
     'optimizer_type': 'Adam',
@@ -15,8 +15,8 @@ TRAINING_PARAMS = {
 }
 
 CV_CONFIG = {
-    #'folds_to_run': None
-    'folds_to_run': [3] # Excerpt 4
+    'folds_to_run': None
+    #'folds_to_run': [3] # Excerpt 4
 }
 
 # --- Data & Preprocessing Parameters ---

@@ -1,11 +1,9 @@
 # optimizer.py
 
-import os
 import torch
 import numpy as np
 import logging
 import itertools
-import pandas as pd
 from pathlib import Path
 from scipy.ndimage import label, find_objects
 from scipy.signal import welch
@@ -123,7 +121,6 @@ def run_master_optimization():
     processed_data_path = project_root / "diagnostics_plots" / "processed_data"
     reports_dir = project_root / "model_reports" / f"LOSO_run_{RUN_TIMESTAMP}"
 
-    # 1. VÄLIMUISTI (Caching)
     subject_cache = {}
     fs = DATA_PARAMS['fs']
     step_samples = int((DATA_PARAMS['window_sec'] - DATA_PARAMS['overlap_sec']) * fs)
@@ -209,7 +206,6 @@ def run_master_optimization():
     best_global_f1 = 0.0
     best_global_cfg = {}
 
-    # Seurataan parhaita tuloksia PER POTILAS (riippumatta konfiguraatiosta)
     best_personal_results = {sub: {'f1': 0.0, 'res_str': '', 'cfg': {}} for sub in ALL_SUBJECTS}
 
     fixed_merge_samp = int(FIXED_MERGE_GAP * fs)
@@ -234,7 +230,6 @@ def run_master_optimization():
             f1, prec, rec, tp, fp = calculate_f1_fast(preds, data['true'])
             subject_f1s.append(f1)
 
-            # Check Personal Best
             if f1 > best_personal_results[subject_id]['f1']:
                 res_str = f"Thresh {cfg['threshold']}: F1 {f1:.4f} (P: {prec:.2f}, R: {rec:.2f}) - TP {tp} / FP {fp}"
                 best_personal_results[subject_id] = {
@@ -249,7 +244,6 @@ def run_master_optimization():
             best_global_f1 = avg_f1
             best_global_cfg = cfg.copy()
 
-    # --- RAPORTOINTI ---
 
     # 1. GLOBAL BEST
     log.info("=" * 60)
@@ -295,7 +289,7 @@ def run_master_optimization():
         res = best_personal_results[subject_id]
         oracle_f1s.append(res['f1'])
         log.info(f"BEST RESULT for {subject_id}: {res['res_str']}")
-        # log.info(f"   Config: {res['cfg']}") # Voi ottaa kommentin pois jos haluaa nähdä parametrit
+        log.info(f"   Config: {res['cfg']}")
 
     log.info("-" * 40)
     log.info(f"ORACLE AVERAGE F1: {np.mean(oracle_f1s):.4f}")

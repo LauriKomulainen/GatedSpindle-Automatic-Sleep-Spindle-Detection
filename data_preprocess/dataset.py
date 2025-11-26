@@ -51,24 +51,19 @@ class SpindleDataset(Dataset):
     def __getitem__(self, idx):
         raw_signal = np.array(self.x_mmap[idx], dtype=np.float32)
 
-        # CH1: Raw
         ch1 = torch.tensor(raw_signal, dtype=torch.float32).unsqueeze(0)
 
-        # CH2: Sigma
         sigma_signal = butter_bandpass_filter(raw_signal, 11.0, 16.0, self.fs, order=4)
         ch2 = torch.tensor(sigma_signal.copy(), dtype=torch.float32).unsqueeze(0)
 
-        # Yhdistetään 2 kanavaa
         signal_tensor = torch.cat([ch1, ch2], dim=0)
 
         if self.augment:
             signal_tensor = self.augmentor(signal_tensor)
 
-        # Maski
         mask_1d = np.array(self.y_mmap[idx], dtype=np.float32)
         mask_tensor = torch.tensor(mask_1d, dtype=torch.float32)
 
-        # Gating Label
         has_spindle = 1.0 if np.max(mask_1d) > 0.5 else 0.0
         label_tensor = torch.tensor(has_spindle, dtype=torch.float32).unsqueeze(0)
 
@@ -77,10 +72,8 @@ class SpindleDataset(Dataset):
 
 def get_dataloaders(processed_data_dir: str, batch_size: int, train_subject_ids: list, val_subject_ids: list,
                     test_subject_ids: list, use_fraction: float = 1.0):
-    # Varmistetaan polun olemassaolo
     if not os.path.exists(processed_data_dir):
         log.error(f"CRITICAL: Data directory not found: {processed_data_dir}")
-        # Palautetaan tyhjät loaderit kaatumisen sijaan, jos polku on väärä
         empty = DataLoader([], batch_size=batch_size)
         return empty, empty, empty
 
@@ -123,8 +116,6 @@ def get_dataloaders(processed_data_dir: str, batch_size: int, train_subject_ids:
 
     common = {'batch_size': batch_size, 'num_workers': 0, 'pin_memory': True}
 
-    # --- KORJAUS: Estetään RandomSamplerin kaatuminen tyhjällä datasetillä ---
-    # Jos train_ds on tyhjä (kuten inferenssissä), shuffle täytyy olla False.
     train_shuffle = True if len(train_ds) > 0 else False
 
     return (DataLoader(train_ds, shuffle=train_shuffle, **common),

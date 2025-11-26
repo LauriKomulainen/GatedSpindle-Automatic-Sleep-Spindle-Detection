@@ -16,7 +16,6 @@ from UNET_model.evaluation_metrics import compute_event_based_metrics, find_opti
 from config import TRAINING_PARAMS, DATA_PARAMS, TEST_FAST_FRACTION, CV_CONFIG, INFERENCE_PARAMS
 
 def set_seed(seed=1):
-    """Lukitsee kaikki satunnaislukugeneraattorit."""
     random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
@@ -94,7 +93,6 @@ if __name__ == "__main__":
         if os.path.exists(best_model_path):
             model.load_state_dict(torch.load(best_model_path))
 
-        # --- UUSI LOGIIKKA: THRESHOLD VALINTA ---
         fixed_thresh = INFERENCE_PARAMS['fixed_threshold']
 
         if fixed_thresh is not None:
@@ -107,7 +105,6 @@ if __name__ == "__main__":
 
         log.info(f"Computing metrics (Threshold: {optimal_thresh}, Power Check: {INFERENCE_PARAMS['use_power_check']})")
 
-        # --- VÄLITETÄÄN POWER CHECK ASETUS ---
         metrics = compute_event_based_metrics(
             model,
             test_loader,

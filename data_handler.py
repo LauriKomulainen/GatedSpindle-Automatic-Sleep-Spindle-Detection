@@ -38,10 +38,6 @@ def segment_data(raw, window_sec: float, overlap_sec: float):
             if start_sample < end_sample:
                 vote_mask[start_sample:end_sample] += 1.0
 
-    # Soft labels: 0.0 (ei kukaan), 0.5 (yksi), 1.0 (molemmat)
-        # --- MUUTOS: HARD UNION ---
-        # Jos vote_mask > 0 (eli 1 tai 2 asiantuntijaa), asetetaan arvoksi 1.0.
-        # Tämä maksimoi Recallin hyväksymällä kaikki mahdolliset spindelit.
         final_mask = np.clip(vote_mask, 0.0, 1.0).astype(np.float32)
 
         log.info(f"Created HARD UNION mask. Values: {np.unique(final_mask)}")
@@ -85,22 +81,18 @@ def main():
 
         signal_data = raw.get_data()[0]
 
-        # 1. Bandpass Filter (0.3 - 35 Hz) - Poistaa pahimmat häiriöt
         filtered_signal = bandpassfilter.apply_bandpass_filter(
             signal_data, fs, LOWCUT, HIGHCUT, FILTER_ORDER
         )
         log.info(f"Signal filtered ({LOWCUT}-{HIGHCUT} Hz).")
 
-        # 2. Normalisointi (Z-score)
         normalized_signal = normalization.normalize_data(filtered_signal)
         log.info("Signal normalized (Z-score).")
         raw._data[0] = normalized_signal
 
-        # 3. Segmentointi ikkunoihin
         x_windows, y_masks = segment_data(raw, window_sec=WINDOW_SEC, overlap_sec=OVERLAP_SEC)
         log.info(f"Segmented to 1D data. X: {x_windows.shape}, Y: {y_masks.shape}")
 
-        # 4. Tallennus (Vain 1D-dataa, ei raskaita kuvia)
         x_path = output_dir / f"{patient_id}_X_1D.npy"
         y_path = output_dir / f"{patient_id}_Y_1D.npy"
 

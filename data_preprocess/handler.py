@@ -5,7 +5,6 @@ from pathlib import Path
 import mne
 import numpy as np
 from typing import List, Dict, Optional, Any
-
 from config import DATA_PARAMS
 
 log = logging.getLogger(__name__)
@@ -80,14 +79,9 @@ def _load_dreams_annotations_txt(txt_file_path: Path, sfreq: float) -> mne.Annot
 
     onsets, durations, descriptions = [], [], []
 
-    # --- KORJAUS ALKAA ---
-    # Poistettu automaattinen tunnistus (is_samples), koska DREAMS-data
-    # on aina sekunteja, vaikka luvut olisivat tasan (esim. 100.0).
-
     for row in annotations_data:
         start_val, duration_val = row[0], row[1]
 
-        # Oletetaan aina sekunneiksi DREAMS-dokumentaation mukaisesti
         start_sec = start_val
         duration_sec = duration_val
 
@@ -97,7 +91,6 @@ def _load_dreams_annotations_txt(txt_file_path: Path, sfreq: float) -> mne.Annot
         onsets.append(start_sec)
         durations.append(duration_sec)
         descriptions.append('spindle')
-    # --- KORJAUS PÄÄTTYY ---
 
     log.info(f"Found and converted {len(onsets)} annotations.")
     return mne.Annotations(onset=onsets, duration=durations, description=descriptions)

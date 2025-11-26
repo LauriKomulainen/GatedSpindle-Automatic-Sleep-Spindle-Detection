@@ -85,18 +85,15 @@ class GatedUNet(nn.Module):
         self.pool3 = nn.MaxPool1d(2)
         self.drop3 = nn.Dropout(dropout_rate)
 
-        # Bottleneck (Transformer poistettu -> yksinkertaisempi ja vakaampi)
+        # Bottleneck
         self.bottleneck = ConvBlock(128, 256)
 
-        # --- UUTTA: CLASSIFICATION HEAD (GATING) ---
-        # Tämä päättää, onko ikkunassa ylipäätään mitään
         self.global_pool = nn.AdaptiveAvgPool1d(1)
         self.gate_fc = nn.Sequential(
             nn.Linear(256, 64),
             nn.ReLU(),
             nn.Dropout(0.3),
             nn.Linear(64, 1)
-            # Huom: Ei Sigmoidia tässä, käytetään BCEWithLogitsLossia koulutuksessa
         )
 
         # Decoder
@@ -136,7 +133,6 @@ class GatedUNet(nn.Module):
 
 
 # --- TRAIN LOOP ---
-
 def train_model(model, train_loader, val_loader, optimizer_type, learning_rate, num_epochs, early_stopping_patience,
                 output_dir, fs):
     from tqdm import tqdm
@@ -165,7 +161,6 @@ def train_model(model, train_loader, val_loader, optimizer_type, learning_rate, 
         model.train()
         ep_loss = 0
 
-        # HUOM: Nyt dataloader palauttaa 3 asiaa
         for x, y_mask, y_label in tqdm(train_loader, desc=f"Epoch {epoch + 1}"):
             x, y_mask, y_label = x.to(device), y_mask.to(device), y_label.to(device)
             optimizer.zero_grad()
@@ -178,7 +173,6 @@ def train_model(model, train_loader, val_loader, optimizer_type, learning_rate, 
             # 2. Gating loss (Global classification)
             loss_cls = criterion_cls(gate_logits, y_label)
 
-            # Yhdistetty loss: 60% segmentaatio, 40% luokittelu
             loss = 0.6 * loss_seg + 0.4 * loss_cls
 
             loss.backward()

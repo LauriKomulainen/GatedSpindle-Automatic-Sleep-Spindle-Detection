@@ -16,8 +16,6 @@ log = logging.getLogger(__name__)
 
 FIXED_BORDER_THRESH = 0.5
 
-
-# --- SAMA ANALYYSIMODUULI KUIN ENNEN ---
 def analyze_signal_properties(signal_segment: np.ndarray, fs: float):
     if len(signal_segment) < int(0.1 * fs): return 0.0, 0.0, 0.0
     nperseg = min(len(signal_segment), 256)
@@ -36,8 +34,6 @@ def analyze_signal_properties(signal_segment: np.ndarray, fs: float):
 
 
 def generate_detailed_csv(true_events, pred_events, raw_signal_1d, probs_1d, fs, subject_id, output_dir):
-    # (Tämä funktio pidetään ennallaan, lyhennetty tässä tilan säästämiseksi)
-    # Se on sama kuin aiemmin lähettämässäni versiossa.
     data_rows = []
     matched_true_indices = set()
     for pred_idx, pred in enumerate(pred_events):
@@ -166,7 +162,6 @@ def _stitch_predictions_1d(all_preds: torch.Tensor, step_samples: int) -> np.nda
     return (stitched_sum / stitched_weights).numpy()
 
 
-# --- PÄIVITETTY METRIIKKAFUNKTIO ---
 def compute_event_based_metrics(model,
                                 data_loader,
                                 threshold: float,
@@ -209,8 +204,6 @@ def compute_event_based_metrics(model,
 
     log.info(f"Finding events (Thresh: {threshold:.2f}, PowerCheck: {use_power_check})...")
 
-    # --- TÄSSÄ ON MUUTOS ---
-    # Jos use_power_check on False, lähetämme None _find_events... funktioon
     signal_for_check = raw_1d if use_power_check else None
 
     pred_events = _find_events_dual_thresh(prob_1d, threshold, FIXED_BORDER_THRESH, fs, raw_signal=signal_for_check)
