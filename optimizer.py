@@ -12,23 +12,27 @@ from tqdm import tqdm
 from utils.logger import setup_logging
 from data_preprocess.dataset import get_dataloaders
 from UNET_model.model import GatedUNet
-from UNET_model.evaluation_metrics import _stitch_predictions_1d, _calculate_iou
+from UNET_model.evaluation_metrics import _stitch_predictions_1d
 from config import DATA_PARAMS
 
-RUN_TIMESTAMP = "2025-11-25_23-43-58"
+RUN_TIMESTAMP = "2025-11-27_21-25-13"
 ALL_SUBJECTS = ['excerpt1', 'excerpt2', 'excerpt3', 'excerpt4', 'excerpt5', 'excerpt6']
 
-FIXED_MERGE_GAP = 0.3
-
+# GRID
 PARAM_GRID = {
-    'threshold': [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8],
-    'min_duration': [0.3, 0.5],
+    'threshold': [0.5, 0.6, 0.7, 0.8, 0.85, 0.9, 0.92, 0.95, 0.97, 0.99],
+    'min_duration': [0.5],
+    'merge_gap': [0.1, 0.2, 0.3],
     'use_power_check': [False, True],
-    'power_ratio': [0.10, 0.15, 0.2, 0.25, 0.3, 0.35, 0.4, 0.45, 0.5, 0.55, 0.6]
+    'power_ratio': [0.10, 0.15, 0.20, 0.25, 0.30]
 }
+
+# Mitä moodia testataan?
+TEST_MODES = ['Best', 'SWA', 'Ensemble']
 
 setup_logging("master_optimization.log")
 log = logging.getLogger(__name__)
+
 
 def verify_spindle_power(signal_segment, fs, threshold_ratio):
     n = len(signal_segment)
@@ -111,7 +115,7 @@ def calculate_f1_fast(pred_events, true_events):
 
 
 def run_master_optimization():
-    log.info("--- STARTING MASTER OPTIMIZATION & PERSONAL BEST TRACKING ---")
+    log.info("--- STARTING MASTER OPTIMIZATION (SEPARATE MODES) ---")
 
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     if torch.backends.mps.is_available(): device = torch.device('mps')
@@ -119,13 +123,22 @@ def run_master_optimization():
     current_file_path = Path(__file__).resolve()
     project_root = current_file_path.parent
     processed_data_path = project_root / "diagnostics_plots" / "processed_data"
-    reports_dir = project_root / "model_reports" / f"LOSO_run_{RUN_TIMESTAMP}"
+
+    # Etsitään uusin LOSO-ajo
+    reports_root = project_root / "model_reports"
+    all_runs = sorted([d for d in reports_root.iterdir() if d.is_dir() and "LOSO_run" in d.name])
+    if not all_runs:
+        log.error("No LOSO runs found in model_reports!")
+        return
+
+    latest_run_dir = all_runs[-1]
+    log.info(f"Using models from LATEST run: {latest_run_dir.name}")
 
     subject_cache = {}
     fs = DATA_PARAMS['fs']
     step_samples = int((DATA_PARAMS['window_sec'] - DATA_PARAMS['overlap_sec']) * fs)
 
-    log.info("Phase 1: Caching Model Predictions...")
+    log.info("Phase 1: Caching Model Predictions (Best & SWA separated)...")
 
     for i, subject_id in enumerate(ALL_SUBJECTS):
         fold_num = i + 1
@@ -134,7 +147,10 @@ def run_master_optimization():
         except:
             continue
 
-        fold_dir = reports_dir / f"Fold_{fold_num}_(Test={subject_id})"
+        fold_dirs = [d for d in latest_run_dir.iterdir() if f"Fold_{fold_num}" in d.name]
+        if not fold_dirs: continue
+        fold_dir = fold_dirs[0]
+
         model_best = GatedUNet(dropout_rate=0.0).to(device)
         model_swa = GatedUNet(dropout_rate=0.0).to(device)
 
@@ -154,36 +170,48 @@ def run_master_optimization():
 
         if not has_best and not has_swa: continue
 
-        all_probs, all_masks, all_raw = [], [], []
+        # Listat erikseen
+        probs_best, probs_swa = [], []
+        all_masks, all_raw = [], []
+
         with torch.no_grad():
             for inputs, masks, _ in test_loader:
                 inputs = inputs.to(device)
-                preds_list = []
+                inputs_flip = torch.flip(inputs, dims=[2])
+
+                # 1. Best Model Prediction
                 if has_best:
                     m, g = model_best(inputs)
+                    # Gating on disabloitu inferenssissä (palauttaa 1.0), joten pelkkä m
                     p = torch.sigmoid(m) * torch.sigmoid(g).unsqueeze(2)
-                    inputs_flip = torch.flip(inputs, dims=[2])
+
                     m_f, g_f = model_best(inputs_flip)
                     p_f = torch.flip(torch.sigmoid(m_f), dims=[2]) * torch.sigmoid(g_f).unsqueeze(2)
-                    preds_list.append((p + p_f) / 2.0)
+
+                    avg_p = (p + p_f) / 2.0
+                    probs_best.append(avg_p.cpu().float())
+
+                # 2. SWA Model Prediction
                 if has_swa:
                     m, g = model_swa(inputs)
                     p = torch.sigmoid(m) * torch.sigmoid(g).unsqueeze(2)
-                    inputs_flip = torch.flip(inputs, dims=[2])
+
                     m_f, g_f = model_swa(inputs_flip)
                     p_f = torch.flip(torch.sigmoid(m_f), dims=[2]) * torch.sigmoid(g_f).unsqueeze(2)
-                    preds_list.append((p + p_f) / 2.0)
 
-                final_prob = torch.mean(torch.stack(preds_list), dim=0)
-                all_probs.append(final_prob.cpu().float())
+                    avg_p = (p + p_f) / 2.0
+                    probs_swa.append(avg_p.cpu().float())
+
                 all_masks.append(masks.cpu().float())
                 all_raw.append(inputs[:, 0, :].cpu().float())
 
-        prob_tensor = torch.cat(all_probs, dim=0)
+        # Stitching
+        cache_entry = {'raw': None, 'true': None, 'best': None, 'swa': None}
+
+        # Raw & True
         mask_tensor = torch.cat(all_masks, dim=0).unsqueeze(1)
         raw_tensor = torch.cat(all_raw, dim=0).unsqueeze(1)
 
-        prob_1d = _stitch_predictions_1d(prob_tensor, step_samples)
         mask_1d = _stitch_predictions_1d(mask_tensor, step_samples)
         raw_1d = _stitch_predictions_1d(raw_tensor, step_samples)
 
@@ -192,108 +220,119 @@ def run_master_optimization():
         slc = find_objects(lbl)
         true_events = [(s[0].start, s[0].stop) for s in slc]
 
-        subject_cache[subject_id] = {
-            'prob': prob_1d, 'raw': raw_1d, 'true': true_events
-        }
+        cache_entry['raw'] = raw_1d
+        cache_entry['true'] = true_events
 
-    # 2. GRID SEARCH & TRACKING
+        # Stitch Best
+        if probs_best:
+            p_tensor = torch.cat(probs_best, dim=0)
+            cache_entry['best'] = _stitch_predictions_1d(p_tensor, step_samples)
+
+        # Stitch SWA
+        if probs_swa:
+            p_tensor = torch.cat(probs_swa, dim=0)
+            cache_entry['swa'] = _stitch_predictions_1d(p_tensor, step_samples)
+
+        subject_cache[subject_id] = cache_entry
+
+    # 2. GRID SEARCH
     log.info("Phase 2: Grid Search & Optimization...")
 
     keys = PARAM_GRID.keys()
     values = (PARAM_GRID[key] for key in keys)
     combinations = [dict(zip(keys, v)) for v in itertools.product(*values)]
 
-    best_global_f1 = 0.0
-    best_global_cfg = {}
+    # Tracking Global Bests
+    best_global_results = {
+        'Best': {'f1': 0.0, 'cfg': {}},
+        'SWA': {'f1': 0.0, 'cfg': {}},
+        'Ensemble': {'f1': 0.0, 'cfg': {}}
+    }
 
-    best_personal_results = {sub: {'f1': 0.0, 'res_str': '', 'cfg': {}} for sub in ALL_SUBJECTS}
-
-    fixed_merge_samp = int(FIXED_MERGE_GAP * fs)
+    # Tracking Personal Bests (per Subject per Mode)
+    # { 'excerpt1': {'Best': {f1, cfg}, 'SWA': ...} }
+    personal_bests = {sub: {m: {'f1': 0.0, 'res_str': ''} for m in TEST_MODES} for sub in ALL_SUBJECTS}
 
     for cfg in tqdm(combinations, desc="Testing Configs"):
         if not cfg['use_power_check'] and cfg['power_ratio'] != PARAM_GRID['power_ratio'][0]:
             continue
 
-        subject_f1s = []
         min_samp = int(cfg['min_duration'] * fs)
+        merge_samp = int(cfg['merge_gap'] * fs)
+
+        # Temp storage for averages
+        mode_f1s = {'Best': [], 'SWA': [], 'Ensemble': []}
 
         for subject_id in ALL_SUBJECTS:
             if subject_id not in subject_cache: continue
             data = subject_cache[subject_id]
 
-            preds = find_events_fast(
-                data['prob'], data['raw'],
-                cfg['threshold'], min_samp, fixed_merge_samp,
-                cfg['use_power_check'], cfg['power_ratio'], fs
-            )
+            # Loopataan moodit
+            for mode in TEST_MODES:
+                prob_map = None
 
-            f1, prec, rec, tp, fp = calculate_f1_fast(preds, data['true'])
-            subject_f1s.append(f1)
+                if mode == 'Best':
+                    prob_map = data['best']
+                elif mode == 'SWA':
+                    prob_map = data['swa']
+                elif mode == 'Ensemble':
+                    if data['best'] is not None and data['swa'] is not None:
+                        prob_map = (data['best'] + data['swa']) / 2.0
+                    elif data['best'] is not None:
+                        prob_map = data['best']
+                    elif data['swa'] is not None:
+                        prob_map = data['swa']
 
-            if f1 > best_personal_results[subject_id]['f1']:
-                res_str = f"Thresh {cfg['threshold']}: F1 {f1:.4f} (P: {prec:.2f}, R: {rec:.2f}) - TP {tp} / FP {fp}"
-                best_personal_results[subject_id] = {
-                    'f1': f1,
-                    'res_str': res_str,
-                    'cfg': cfg.copy()
-                }
+                if prob_map is None: continue
 
-        avg_f1 = np.mean(subject_f1s)
+                # Find Events
+                preds = find_events_fast(
+                    prob_map, data['raw'],
+                    cfg['threshold'], min_samp, merge_samp,
+                    cfg['use_power_check'], cfg['power_ratio'], fs
+                )
 
-        if avg_f1 > best_global_f1:
-            best_global_f1 = avg_f1
-            best_global_cfg = cfg.copy()
+                f1, prec, rec, tp, fp = calculate_f1_fast(preds, data['true'])
+                mode_f1s[mode].append(f1)
 
+                # Update Personal Best for this mode
+                if f1 > personal_bests[subject_id][mode]['f1']:
+                    res_str = f"[{mode}] F1 {f1:.4f} (P:{prec:.2f} R:{rec:.2f}) | Th:{cfg['threshold']} G:{cfg['merge_gap']} Pow:{cfg['power_ratio']}"
+                    personal_bests[subject_id][mode] = {
+                        'f1': f1,
+                        'res_str': res_str,
+                        'cfg': cfg.copy()
+                    }
 
-    # 1. GLOBAL BEST
-    log.info("=" * 60)
-    log.info(f"WINNING GLOBAL CONFIGURATION (Highest Average F1: {best_global_f1:.4f})")
-    log.info(f"Settings: {best_global_cfg}")
-    log.info("-" * 60)
-    log.info("Detailed Results with Global Config:")
+        # Update Global Averages
+        for mode in TEST_MODES:
+            if not mode_f1s[mode]: continue
+            avg_f1 = np.mean(mode_f1s[mode])
 
-    global_stats = {'f1': [], 'prec': [], 'rec': []}
+            if avg_f1 > best_global_results[mode]['f1']:
+                best_global_results[mode]['f1'] = avg_f1
+                best_global_results[mode]['cfg'] = cfg.copy()
 
-    for subject_id in ALL_SUBJECTS:
-        if subject_id not in subject_cache: continue
-        data = subject_cache[subject_id]
-        cfg = best_global_cfg
+    # --- REPORTING ---
+    log.info("=" * 80)
+    log.info("FINAL RESULTS BY MODE")
+    log.info("=" * 80)
 
-        preds = find_events_fast(
-            data['prob'], data['raw'],
-            cfg['threshold'], int(cfg['min_duration'] * fs), fixed_merge_samp,
-            cfg['use_power_check'], cfg['power_ratio'], fs
-        )
-        f1, prec, rec, tp, fp = calculate_f1_fast(preds, data['true'])
+    for mode in TEST_MODES:
+        res = best_global_results[mode]
+        log.info(f"MODE: {mode.upper()}")
+        log.info(f"  Best Average F1: {res['f1']:.4f}")
+        log.info(f"  Best Config:     {res['cfg']}")
+        log.info("-" * 40)
 
-        global_stats['f1'].append(f1)
-        global_stats['prec'].append(prec)
-        global_stats['rec'].append(rec)
+    log.info("\nORACLE RESULTS PER SUBJECT (Best found configuration for each)")
+    log.info("-" * 80)
 
-        log.info(f"{subject_id}: F1 {f1:.4f} (P: {prec:.2f}, R: {rec:.2f}) - TP {tp} / FP {fp}")
+    for sub in ALL_SUBJECTS:
+        best_mode = max(TEST_MODES, key=lambda m: personal_bests[sub][m]['f1'])
+        best_entry = personal_bests[sub][best_mode]
 
-    log.info("-" * 40)
-    log.info(f"GLOBAL AVERAGE F1: {np.mean(global_stats['f1']):.4f}")
-    log.info(f"GLOBAL AVERAGE PREC: {np.mean(global_stats['prec']):.4f}")
-    log.info(f"GLOBAL AVERAGE REC:  {np.mean(global_stats['rec']):.4f}")
-    log.info("=" * 60)
-
-    # 2. PERSONAL BESTS (ORACLE)
-    log.info("BEST POSSIBLE RESULT PER SUBJECT (Oracle / Personal Best)")
-    log.info("This shows the potential if params were tuned per subject:")
-    log.info("-" * 60)
-
-    oracle_f1s = []
-
-    for subject_id in ALL_SUBJECTS:
-        res = best_personal_results[subject_id]
-        oracle_f1s.append(res['f1'])
-        log.info(f"BEST RESULT for {subject_id}: {res['res_str']}")
-        log.info(f"   Config: {res['cfg']}")
-
-    log.info("-" * 40)
-    log.info(f"ORACLE AVERAGE F1: {np.mean(oracle_f1s):.4f}")
-    log.info("=" * 60)
+        log.info(f"{sub} WINNER -> {best_entry['res_str']}")
 
 
 if __name__ == "__main__":
