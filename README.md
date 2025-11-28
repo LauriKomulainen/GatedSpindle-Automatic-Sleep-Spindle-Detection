@@ -24,17 +24,17 @@ To maximize stability and generalization, the inference pipeline utilizes a **Du
 
 ## Performance Results (LOSO Cross-Validation)
 
-The model was evaluated using **Leave-One-Subject-Out (LOSO)** cross-validation on the DREAMS database (n=6, union of two experts). The results below reflect the **Global Optimized Configuration** (Threshold: 0.6, Min Duration: 0.5s, Merge Gap: 0.3s), demonstrating valid, automated performance without subject-specific tuning.
+The model was evaluated using Leave-One-Subject-Out (LOSO) cross-validation on the DREAMS database.
 
-| Subject | F1-score | Precision | Recall | TP (Events) | FP (Events) |
-| :--- | :--- | :--- | :--- | :--- | :--- |
-| **Excerpt 1** | **0.8248** | 0.81 | 0.84 | 113 | 27 |
-| **Excerpt 2** | **0.7481** | 0.91 | 0.64 | 49 | 5 |
-| **Excerpt 3** | **0.8222** | 0.80 | 0.84 | 37 | 9 |
-| **Excerpt 4** | **0.6316** | 0.60 | 0.67 | 42 | 28 |
-| **Excerpt 5** | **0.7739** | 0.80 | 0.75 | 77 | 19 |
-| **Excerpt 6** | **0.7647** | 0.90 | 0.67 | 78 | 9 |
-| **AVERAGE** | **0.7609** | **0.8029** | **0.7336** | **66.0** | **16.1** |
+| Subject | F1-score | Precision | Recall | TP (Events) | FP (Events) | mIoU (TPs) |
+| :--- | :--- | :--- | :--- | :--- | :--- | :--- |
+| **Excerpt 1** | **0.8248** | 0.81 | 0.84 | 113 | 27 | 0.7743 |
+| **Excerpt 2** | **0.7481** | 0.91 | 0.64 | 49 | 5 | 0.7922 |
+| **Excerpt 3** | **0.8222** | 0.80 | 0.84 | 37 | 9 | 0.7739 |
+| **Excerpt 4** | **0.5838** | 0.44 | 0.89 | 54 | 70 | 0.6966 |
+| **Excerpt 5** | **0.7739** | 0.80 | 0.75 | 77 | 19 | 0.8262 |
+| **Excerpt 6** | **0.7826** | 0.85 | 0.72 | 81 | 14 | 0.8213 |
+| **AVERAGE** | **0.7559** <br> (± 0.0815) | **0.7680** <br> (± 0.1537) | **0.7800** <br> (± 0.0837) | **68.5** | **24.0** | **0.7807** <br> (± 0.0428) |
 
 ## Configuration & Reproducibility
 TBD
