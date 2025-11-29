@@ -10,7 +10,7 @@ TRAINING_PARAMS = {
     'learning_rate': 1e-4,
     'dropout_rate': 0.2,
     'optimizer_type': 'Adam',
-    'num_epochs': 100,
+    'num_epochs': 150,
     'early_stopping_patience': 25
 }
 
@@ -26,7 +26,20 @@ DATA_PARAMS = {
     'overlap_sec': 2.5,
     'lowcut': 0.3,
     'highcut': 30.0,
-    'filter_order': 4
+    'filter_order': 4,
+
+    # --- NEW: Instance Normalization & Hypnogram Filtering ---
+    # True: Normalisoi jokainen 5s ikkuna erikseen (suositeltu).
+    # False: Normalisoi koko signaali kerralla ennen pilkkomista (vanha tapa).
+    'use_instance_norm': True,
+
+    # Mitkä univaiheet otetaan mukaan koulutusdataan?
+    # DREAMS koodaus:
+    # 5=Wake, 4=REM, 3=S1, 2=S2, 1=S3, 0=S4
+    'included_stages': [2, 1, 0],
+
+    # Hypnogrammin resoluutio sekunneissa (DREAMS readme/kuva mainitsi 5s)
+    'hypnogram_resolution_sec': 5.0
 }
 
 # --- Event Metric Parameters ---
@@ -43,6 +56,6 @@ TEST_FAST_FRACTION = {
 }
 
 INFERENCE_PARAMS = {
-    'fixed_threshold': 0.5,
+    'fixed_threshold': 0.55,
     'use_power_check': False
 }
