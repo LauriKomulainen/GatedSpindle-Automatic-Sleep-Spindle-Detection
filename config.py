@@ -10,13 +10,13 @@ TRAINING_PARAMS = {
     'learning_rate': 1e-4,
     'dropout_rate': 0.2,
     'optimizer_type': 'Adam',
-    'num_epochs': 150,
+    'num_epochs': 200,
     'early_stopping_patience': 25
 }
 
 CV_CONFIG = {
     'folds_to_run': None
-    #'folds_to_run': [3] # Excerpt 4
+    #'folds_to_run': [3,4,5] # Excerpt 4
 }
 
 # --- Data & Preprocessing Parameters ---

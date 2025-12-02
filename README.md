@@ -31,12 +31,12 @@ The model was evaluated using Leave-One-Subject-Out (LOSO) cross-validation on t
 
 | Subject | F1-score | Precision | Recall | TP (Events) | FP (Events) | mIoU (TPs) |
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
-| **Excerpt 1** | **0.8061** | 0.82 | 0.80 | 106 | 24 | 0.7744 |
-| **Excerpt 2** | **0.8000** | 0.80 | 0.80 | 60 | 15 | 0.8013 |
-| **Excerpt 3** | **0.8205** | 0.84 | 0.80 | 32 | 6 | 0.8063 |
-| **Excerpt 4** | **0.7755** | 0.79 | 0.76 | 19 | 5 | 0.7596 |
-| **Excerpt 5** | **0.7467** | 0.68 | 0.83 | 84 | 40 | 0.8016 |
-| **Excerpt 6** | **0.7668** | 0.91 | 0.66 | 74 | 7 | 0.8050 |
-| **AVERAGE** | **0.7859** <br> (± 0.0252) | **0.8067** <br> (± 0.0704) | **0.7749** <br> (± 0.0551) | **62.5** | **16.2** | **0.7914** <br> (± 0.0179) |
+| **Excerpt 1** | **0.8061** | 0.8154 | 0.7970 | 106 | 24 | 0.7744 |
+| **Excerpt 2** | **0.7761** | 0.8814 | 0.6933 | 52 | 7 | 0.7921 |
+| **Excerpt 3** | **0.8831** | 0.9189 | 0.8500 | 34 | 3 | 0.7834 |
+| **Excerpt 4** | **0.6977** | 0.8333 | 0.6000 | 15 | 3 | 0.7449 |
+| **Excerpt 5** | **0.7959** | 0.8211 | 0.7723 | 78 | 17 | 0.8124 |
+| **Excerpt 6** | **0.7923** | 0.8632 | 0.7321 | 82 | 13 | 0.8190 |
+| **AVERAGE** | **0.7919** <br> (± 0.0543) | **0.8555** <br> (± 0.0366) | **0.7408** <br> (± 0.0798) | **61.2** | **11.2** | **0.7877** <br> (± 0.0246) |
 
 *Note: Evaluation is restricted to N2 and N3 sleep stages to ensure biological validity and comparability with ground truth, removing artifacts present in Wake/REM stages.*
