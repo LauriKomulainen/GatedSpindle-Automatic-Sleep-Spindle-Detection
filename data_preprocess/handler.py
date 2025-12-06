@@ -4,178 +4,162 @@ import logging
 from pathlib import Path
 import mne
 import numpy as np
-import pandas as pd
+from typing import List, Dict, Optional, Any
 from config import DATA_PARAMS
-from scipy.ndimage import label
 
 log = logging.getLogger(__name__)
 
-EXCLUDED_SUBJECTS = []
 TARGET_SAMPLE_RATE = DATA_PARAMS['fs']
 
-def _count_events(mask):
-    if mask is None: return 0
-    _, n = label(mask)
-    return n
+
+def find_dreams_data_files(raw_data_path: Path) -> List[Dict[str, Any]]:
+    """
+    Etsii DREAMS-datatiedostot perustuen config.py:n subjects_list-asetukseen.
+    Hoitaa automaattisesti poikkeukset potilaille 7 ja 8 (vain Scorer 1).
+    """
+    subjects_to_process = DATA_PARAMS['subjects_list']
+    log.info(f"Searching for data in: {raw_data_path}")
+    log.info(f"Subjects to process: {subjects_to_process}")
+
+    edf_dir = raw_data_path / 'EDF'
+    txt_dir = raw_data_path / 'TXT'
+
+    # Fallback: jos kansioita ei ole, oletetaan tiedostojen olevan juuressa
+    if not edf_dir.is_dir():
+        edf_dir = raw_data_path
+    if not txt_dir.is_dir():
+        txt_dir = raw_data_path
+
+    found_subjects = []
+
+    for subject_id in subjects_to_process:
+        # Etsitään tiedostoja configin listan perusteella
+        edf_name = f"{subject_id}.edf"
+        edf_file = edf_dir / edf_name
+
+        if not edf_file.exists():
+            log.warning(f"EDF file not found for {subject_id}: {edf_file}")
+            continue
+
+        annotation_files = []
+
+        # Rakennetaan annotaatiotiedostojen nimet
+        # Oletus: Visual_scoring1_excerpt1.txt
+        idx_str = ''.join(filter(str.isdigit, subject_id))  # "excerpt1" -> "1"
+        txt_file_e1 = txt_dir / f"Visual_scoring1_excerpt{idx_str}.txt"
+        txt_file_e2 = txt_dir / f"Visual_scoring2_excerpt{idx_str}.txt"
+
+        # --- LOGIIKKA 7 & 8: KÄYTÄ VAIN SCORER 1 ---
+        if subject_id in ['excerpt7', 'excerpt8']:
+            log.info(f"Subject {subject_id}: Single scorer mode (loading only Scorer 1).")
+            if txt_file_e1.exists():
+                annotation_files.append(txt_file_e1)
+            else:
+                log.warning(f"Subject {subject_id}: Scorer 1 annotation file missing!")
+
+        # --- MUUT POTILAAT: KÄYTÄ MOLEMPIA JOS LÖYTYY ---
+        else:
+            if txt_file_e1.exists():
+                annotation_files.append(txt_file_e1)
+            else:
+                log.warning(f"Subject {subject_id}: Scorer 1 missing.")
+
+            if txt_file_e2.exists():
+                annotation_files.append(txt_file_e2)
+            else:
+                log.warning(
+                    f"Subject {subject_id}: Scorer 2 missing (normal if single scorer, but unexpected for 1-6).")
+
+        if annotation_files:
+            found_subjects.append({
+                'id': subject_id,
+                'signal_file': edf_file,
+                'annotation_files': annotation_files
+            })
+            log.info(f"Found {subject_id} with {len(annotation_files)} annotation file(s).")
+        else:
+            log.warning(f"Skipping {subject_id} - No annotation files found.")
+
+    log.info(f"Found a total of {len(found_subjects)} processable DREAMS subjects.")
+    return found_subjects
 
 
-def _load_dreams_annotations_txt(file_path: Path, sfreq: float):
-    annotations = []
+def _load_dreams_annotations_txt(txt_file_path: Path, sfreq: float) -> mne.Annotations:
     try:
+        # Yritetään lukea ilman otsikkoa (tai kommentilla #)
+        annotations_data = np.loadtxt(txt_file_path, comments='#', skiprows=0)
+    except ValueError:
+        # Jos epäonnistuu (esim. otsikkorivi), hypätään yli 1. rivi
         try:
-            df = pd.read_csv(file_path, sep=r'\s+', header=None, names=['start', 'duration'], skiprows=1)
-        except:
-            df = pd.read_csv(file_path, sep='\t', header=None, names=['start', 'duration'])
-
-        for _, row in df.iterrows():
-            try:
-                onset = float(row['start'])
-                duration = float(row['duration'])
-                annotations.append((onset, duration, 'spindle'))
-            except ValueError:
-                continue
+            annotations_data = np.loadtxt(txt_file_path, comments='#', skiprows=1)
+        except Exception as e:
+            log.error(f"Failed to read {txt_file_path.name}: {e}")
+            return mne.Annotations([], [], [])
     except Exception as e:
-        log.warning(f"Failed to read annotations from {file_path}: {e}")
-
-    if annotations:
-        onsets = [x[0] for x in annotations]
-        durations = [x[1] for x in annotations]
-        descriptions = [x[2] for x in annotations]
-
-        return mne.Annotations(onset=onsets, duration=durations, description=descriptions)
-    else:
+        log.error(f"Failed to read {txt_file_path.name}: {e}")
         return mne.Annotations([], [], [])
 
+    if annotations_data.ndim == 1:
+        annotations_data = annotations_data.reshape(1, -1)
 
-def create_mask_from_annotations(raw, annotations):
-    mask = np.zeros(len(raw.times), dtype=np.float32)
-    fs = raw.info['sfreq']
+    # DREAMS format: Start(sec) Duration(sec)
+    if annotations_data.shape[1] < 2:
+        return mne.Annotations([], [], [])
 
-    for ann in annotations:
-        start_idx = int(ann['onset'] * fs)
-        end_idx = start_idx + int(ann['duration'] * fs)
-        start_idx = max(0, min(start_idx, len(mask)))
-        end_idx = max(0, min(end_idx, len(mask)))
-        mask[start_idx:end_idx] = 1.0
-    return mask
+    onsets = []
+    durations = []
+    descriptions = []
+
+    for row in annotations_data:
+        start_sec = row[0]
+        duration_sec = row[1]
+
+        if duration_sec > 0:
+            onsets.append(start_sec)
+            durations.append(duration_sec)
+            descriptions.append('spindle')
+
+    return mne.Annotations(onset=onsets, duration=durations, description=descriptions)
 
 
-# --- PÄÄFUNKTIOT ---
-
-def load_data(data_dir: Path, subject_id: str, merge_mode='UNION'):
+def load_dreams_patient_data(patient_file_group: Dict[str, Any], eeg_channel: str = 'C3-A1') -> Optional[mne.io.Raw]:
+    patient_id = patient_file_group['id']
+    log.info(f"Loading data for patient: {patient_id}...")
     try:
-        idx = int(''.join(filter(str.isdigit, subject_id)))
-    except:
-        log.error(f"Invalid subject ID {subject_id}")
-        return None, None
+        raw_signal = mne.io.read_raw_edf(patient_file_group['signal_file'], preload=True, verbose='WARNING')
 
-    edf_name = f"excerpt{idx}.edf"
-    edf_path = data_dir / edf_name
+        # Resample tarvittaessa
+        if raw_signal.info['sfreq'] != TARGET_SAMPLE_RATE:
+            raw_signal.resample(TARGET_SAMPLE_RATE, npad="auto")
 
-    if not edf_path.exists():
-        log.error(f"EDF not found: {edf_path}")
-        return None, None
+        # Kanavan valinta
+        target_channel = eeg_channel
+        if target_channel not in raw_signal.ch_names:
+            # Fallback logiikka
+            fallback_channels = [ch for ch in raw_signal.ch_names if 'C3' in ch.upper()]
+            if not fallback_channels:
+                fallback_channels = [ch for ch in raw_signal.ch_names if 'CZ' in ch.upper()]
 
-    try:
-        raw = mne.io.read_raw_edf(edf_path, preload=True, verbose=False)
+            if fallback_channels:
+                target_channel = fallback_channels[0]
+                log.info(f"Using fallback channel: {target_channel}")
+            else:
+                log.error(f"No suitable EEG channel found for {patient_id}.")
+                return None
+
+        raw_signal.pick([target_channel])
+
+        # Yhdistä annotaatiot (Union)
+        sfreq = raw_signal.info['sfreq']
+        combined_annotations = mne.Annotations([], [], [])
+
+        for ann_file in patient_file_group['annotation_files']:
+            annotations = _load_dreams_annotations_txt(ann_file, sfreq)
+            combined_annotations = combined_annotations + annotations
+
+        raw_signal.set_annotations(combined_annotations)
+        return raw_signal
+
     except Exception as e:
-        log.error(f"EDF load error: {e}")
-        return None, None
-
-    if 'C3-A1' in raw.ch_names:
-        raw.pick(['C3-A1'])
-    elif 'Cz-A1' in raw.ch_names:
-        raw.pick(['Cz-A1'])
-    else:
-        raw.pick([raw.ch_names[0]])
-
-    if raw.info['sfreq'] != TARGET_SAMPLE_RATE:
-        raw.resample(TARGET_SAMPLE_RATE)
-
-    txt1 = data_dir / f"Visual_scoring1_excerpt{idx}.txt"
-    if not txt1.exists(): txt1 = data_dir / "Visual_scoring1.txt"
-
-    txt2 = data_dir / f"Visual_scoring2_excerpt{idx}.txt"
-    if not txt2.exists(): txt2 = data_dir / "Visual_scoring2.txt"
-
-    mask1 = None
-    mask2 = None
-
-    if txt1.exists():
-        ann1 = _load_dreams_annotations_txt(txt1, raw.info['sfreq'])
-        mask1 = create_mask_from_annotations(raw, ann1)
-
-    if txt2.exists():
-        ann2 = _load_dreams_annotations_txt(txt2, raw.info['sfreq'])
-        mask2 = create_mask_from_annotations(raw, ann2)
-
-    c1 = _count_events(mask1)
-    c2 = _count_events(mask2)
-    log.info(f"--- Annotations for {subject_id} ---")
-    log.info(f"  Scorer 1: {c1}")
-    log.info(f"  Scorer 2: {c2}")
-
-    # Merge Logic
-    final_mask = np.zeros(len(raw.times), dtype=np.float32)
-
-    if mask1 is not None and mask2 is not None:
-        if merge_mode == 'INTERSECTION':
-            final_mask = np.minimum(mask1, mask2)
-            log.info(f"  --> INTERSECTION: {_count_events(final_mask)}")
-        elif merge_mode == 'UNION':
-            final_mask = np.maximum(mask1, mask2)
-            log.info(f"  --> UNION: {_count_events(final_mask)}")
-        else:
-            final_mask = mask1
-            log.info("  --> Scorer 1 Only")
-    elif mask1 is not None:
-        final_mask = mask1
-        log.info("  --> Scorer 1 (Scorer 2 missing)")
-    elif mask2 is not None:
-        final_mask = mask2
-        log.info("  --> Scorer 2 (Scorer 1 missing)")
-
-    return raw, final_mask
-
-
-def segment_data(raw, mask, hypnogram, window_sec, overlap_sec, included_stages):
-    """
-    Segmentoi signaalin. SISÄLTÄÄ TÄRKEÄN PITUUSTARKISTUKSEN.
-    """
-    fs = raw.info['sfreq']
-    signal = raw.get_data()[0]
-
-    window_samples = int(window_sec * fs)
-    step_samples = int((window_sec - overlap_sec) * fs)
-    hypno_res_sec = 5.0
-
-    windows_x = []
-    windows_y = []
-
-    n_windows = (len(signal) - window_samples) // step_samples + 1
-
-    for i in range(n_windows):
-        start_idx = i * step_samples
-        end_idx = start_idx + window_samples
-
-        if end_idx > len(signal):
-            break
-
-        mid_sec = (start_idx + end_idx) / 2.0 / fs
-        hypno_idx = int(mid_sec / hypno_res_sec)
-
-        if hypno_idx < len(hypnogram):
-            stage = hypnogram[hypno_idx]
-            if stage in included_stages:
-                x_seg = signal[start_idx:end_idx]
-                y_seg = mask[start_idx:end_idx]
-
-                # VARMISTETAAN PITUUS
-                if len(x_seg) == window_samples:
-                    windows_x.append(x_seg)
-                    windows_y.append(y_seg)
-
-    if len(windows_x) == 0:
-        return np.array([]), np.array([])
-
-    return np.array(windows_x), np.array(windows_y)
+        log.error(f"Error loading data for {patient_id}: {e}")
+        return None

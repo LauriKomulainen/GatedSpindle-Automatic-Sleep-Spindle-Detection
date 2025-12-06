@@ -48,6 +48,7 @@ class SpindleDataset(Dataset):
         self.augmentor = RandomAugment1D(p=0.5)
         self.use_instance_norm = DATA_PARAMS.get('use_instance_norm', True)
 
+        # Haetaan taajuusrajat configista
         self.low_f = METRIC_PARAMS['spindle_freq_low']
         self.high_f = METRIC_PARAMS['spindle_freq_high']
 
@@ -75,6 +76,8 @@ class SpindleDataset(Dataset):
         # --- LABEL LOADING (HARD LABELS) ---
         mask_1d = np.array(self.y_mmap[idx], dtype=np.float32)
         mask_tensor = torch.tensor(mask_1d, dtype=torch.float32)
+
+        # Global label
         has_spindle = 1.0 if np.max(mask_1d) > 0.5 else 0.0
         label_tensor = torch.tensor(has_spindle, dtype=torch.float32).unsqueeze(0)
 

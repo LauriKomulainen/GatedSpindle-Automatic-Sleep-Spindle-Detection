@@ -4,9 +4,9 @@ import os
 
 # --- File Paths ---
 PATHS = {
-    "raw_data_dir": "path",  # Update this to your local path
+    "raw_data_dir": "Path",
     "processed_data_dir": "./data/processed",
-    "output_dir": "./model_reports"
+    "output_dir": "./new_model_reports_v3"
 }
 
 os.makedirs(PATHS["processed_data_dir"], exist_ok=True)
@@ -25,16 +25,10 @@ DATA_PARAMS = {
     'hypnogram_resolution_sec': 5.0,
 
     # --- SUBJECT SELECTION ---
-    # List subjects to include in processing and training.
-    # Note: Excerpts 7 & 8 only have one scorer available.
-    'subjects_list': ['excerpt1', 'excerpt2', 'excerpt3', 'excerpt4', 'excerpt5', 'excerpt6'],
-
-    # --- ANNOTATION MERGE STRATEGY ---
-    # 'UNION':        Accept spindle if marked by Scorer 1 OR Scorer 2. (More data, higher recall).
-    # 'INTERSECTION': Accept spindle only if marked by BOTH scorers. (Higher confidence).
-    # 'SCORER1':      Use annotations from Scorer 1 only.
-    # Note: Excerpts 7 & 8 automatically default to Scorer 1 as Scorer 2 data is missing.
-    'annotation_merge_mode': 'UNION'
+    'subjects_list': [
+        'excerpt1', 'excerpt2', 'excerpt3', 'excerpt4',
+        'excerpt5', 'excerpt6'
+    ],
 }
 
 # --- Training Hyperparameters ---
@@ -46,13 +40,14 @@ TRAINING_PARAMS = {
     'weight_decay': 1e-4,
     'ademamix_alpha': 5.0,
     'ademamix_betas': (0.9, 0.999, 0.9999),
-    'num_epochs': 1,
+    'num_epochs': 200,
     'early_stopping_patience': 25,
     'use_swa': True
 }
 
 CV_CONFIG = {
-    'folds_to_run': None
+    'folds_to_run': None  # [0, 1]
+    #'folds_to_run': [0]
 }
 
 METRIC_PARAMS = {
