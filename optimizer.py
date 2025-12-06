@@ -2,12 +2,16 @@
 
 import torch
 import numpy as np
+import pandas as pd
 import logging
 import itertools
+import argparse
+import sys
 from pathlib import Path
 from scipy.ndimage import label, find_objects
 from scipy.signal import welch
 from tqdm import tqdm
+from joblib import Parallel, delayed
 
 from utils.logger import setup_logging
 from data_preprocess.dataset import get_dataloaders
@@ -15,46 +19,60 @@ from UNET_model.model import GatedUNet
 from UNET_model.evaluation_metrics import _stitch_predictions_1d
 from config import DATA_PARAMS
 
+# --- CONFIGURATION ---
 ALL_SUBJECTS = ['excerpt1', 'excerpt2', 'excerpt3', 'excerpt4', 'excerpt5', 'excerpt6']
 
-# --- CONFIGURATION ---
-# Jos haluat käyttää tiettyä kansiota, laita sen nimi tähän (esim. "LOSO_run_2025-11-28_23-00-00")
-# Jos None, koodi etsii automaattisesti uusimman "LOSO_run_..." kansion.
-MANUAL_RUN_NAME = None
+# Jos et käytä komentoriviargumenttia, voit asettaa kansion nimen tähän manuaalisesti.
+# Esim: "LOSO_run_2025-12-02_21-58-15"
+MANUAL_RUN_NAME = '1_1'
 
-# GRID - Voit säätää näitä tarpeen mukaan
+# LAAJENNETTU GRID (Perustuu virheanalyysiin)
 PARAM_GRID = {
-    'threshold': [0.5, 0.6, 0.7, 0.8, 0.85, 0.9, 0.92, 0.95, 0.97, 0.99],
+    # Kokeillaan korkeampia kynnyksiä FP:n vähentämiseksi
+    'threshold': [0.40, 0.45, 0.50, 0.55, 0.60, 0.65, 0.70, 0.75, 0.80],
+
+    # Sallitaan lyhyemmät pätkät Recallin parantamiseksi
     'min_duration': [0.5],
-    'merge_gap': [0.1, 0.2, 0.3],
-    'use_power_check': [False, True],
-    'power_ratio': [0.10, 0.15, 0.20, 0.25, 0.30]
+
+    # Yhdistetäänkö lähekkäiset?
+    'merge_gap': [0.1],
+
+    # Power Check -parametrit (Tärkeä Excerpt 4:lle)
+    'use_power_check': [True, False],
+    'power_ratio': [0.10, 0.12, 0.15, 0.18, 0.20],  # Matalampi ratio heikoille sukkuloille
+
+    # Taajuusrajat power checkille
+    'freq_low': [10.0, 11.0],
+    'freq_high': [16.0, 18.0]
 }
 
-# Mitä moodia testataan?
-TEST_MODES = ['Best', 'SWA', 'Ensemble']
+# Keskitytään vain Ensembleen optimoinnin nopeuttamiseksi
+TEST_MODES = ['Ensemble']
 
-setup_logging("master_optimization.log")
+setup_logging("optimizer.log")
 log = logging.getLogger(__name__)
 
 
-def verify_spindle_power(signal_segment, fs, threshold_ratio):
+def verify_spindle_power(signal_segment, fs, threshold_ratio, f_low, f_high):
     """
-    Checks if the segment has enough relative power in the sigma band (11-16Hz).
-    Robust to normalization scale since it uses a ratio.
+    Tarkistaa onko segmentissä tarpeeksi sukkulatehoa suhteessa kokonaistehoon.
+    Käyttää dynaamisia taajuusrajoja.
     """
     n = len(signal_segment)
-    if n < int(0.3 * fs): return False
-    nperseg = min(n, 128)
+    # Sallitaan hieman lyhyemmät segmentit tarkistuksessa (0.1s)
+    if n < int(0.1 * fs): return False
+
     try:
-        freqs, psd = welch(signal_segment, fs, nperseg=nperseg)
+        # Käytetään nperseg joka on max segmentin pituus tai 256
+        freqs, psd = welch(signal_segment, fs, nperseg=min(n, 256))
     except:
         return False
 
-    idx_sigma = np.where((freqs >= 11.0) & (freqs <= 16.0))[0]
+    # Dynaamiset rajat gridistä
+    idx_sigma = np.where((freqs >= f_low) & (freqs <= f_high))[0]
     idx_total = np.where((freqs >= 0.5) & (freqs <= 30.0))[0]
 
-    if len(idx_sigma) < 2 or len(idx_total) < 2: return False
+    if len(idx_sigma) < 1 or len(idx_total) < 1: return False
 
     power_sigma = np.trapz(psd[idx_sigma], freqs[idx_sigma])
     power_total = np.trapz(psd[idx_total], freqs[idx_total])
@@ -63,124 +81,189 @@ def verify_spindle_power(signal_segment, fs, threshold_ratio):
     return (power_sigma / power_total) >= threshold_ratio
 
 
-def find_events_fast(prob_1d, raw_1d, thresh, min_samples, merge_samples, use_power, power_ratio, fs):
-    mask = prob_1d > thresh
-    labeled, num_features = label(mask)
-    if num_features == 0: return []
+def process_single_combination(cfg, subject_cache, fs):
+    """
+    Laskee metriikat yhdelle parametriyhdistelmälle (cfg) kaikille potilaille.
+    Tätä funktiota ajetaan rinnakkain (Parallel).
+    """
 
-    slices = find_objects(labeled)
-    raw_events = [(s[0].start, s[0].stop) for s in slices]
+    total_tp, total_fp, total_fn = 0, 0, 0
+    subject_results = {}
 
-    if not raw_events: return []
-    merged = []
-    curr_start, curr_end = raw_events[0]
-    for i in range(1, len(raw_events)):
-        next_start, next_end = raw_events[i]
-        if (next_start - curr_end) < merge_samples:
-            curr_end = next_end
-        else:
+    min_samp = int(cfg['min_duration'] * fs)
+    merge_samp = int(cfg['merge_gap'] * fs)
+
+    f_low = cfg.get('freq_low', 11.0)
+    f_high = cfg.get('freq_high', 16.0)
+
+    for subject_id, data in subject_cache.items():
+        prob_map = None
+
+        # Ensemble Logic: (Best + SWA) / 2
+        if data['best'] is not None and data['swa'] is not None:
+            prob_map = (data['best'] + data['swa']) / 2.0
+        elif data['best'] is not None:
+            prob_map = data['best']
+        elif data['swa'] is not None:
+            prob_map = data['swa']
+
+        if prob_map is None:
+            subject_results[subject_id] = 0.0
+            continue
+
+        # --- Event Detection Logic ---
+        mask = prob_map > cfg['threshold']
+        labeled, num_features = label(mask)
+        raw_slices = find_objects(labeled)
+        raw_events = [(s[0].start, s[0].stop) for s in raw_slices]
+
+        # 1. Merging close events
+        merged = []
+        if raw_events:
+            curr_start, curr_end = raw_events[0]
+            for i in range(1, len(raw_events)):
+                next_start, next_end = raw_events[i]
+                if (next_start - curr_end) < merge_samp:
+                    curr_end = next_end  # Yhdistä
+                else:
+                    merged.append((curr_start, curr_end))
+                    curr_start, curr_end = next_start, next_end
             merged.append((curr_start, curr_end))
-            curr_start, curr_end = next_start, next_end
-    merged.append((curr_start, curr_end))
 
-    final_events = []
-    for start, end in merged:
-        if (end - start) >= min_samples:
-            if use_power:
-                if verify_spindle_power(raw_1d[start:end], fs, power_ratio):
-                    final_events.append((start, end))
-            else:
-                final_events.append((start, end))
+        # 2. Filtering (Duration & Power)
+        final_preds = []
+        for start, end in merged:
+            if (end - start) >= min_samp:
+                if cfg['use_power_check']:
+                    # Hae vastaava pätkä raakasignaalista
+                    segment = data['raw'][start:end]
+                    if verify_spindle_power(segment, fs, cfg['power_ratio'], f_low, f_high):
+                        final_preds.append((start, end))
+                else:
+                    final_preds.append((start, end))
 
-    return final_events
+        # 3. Scoring (IoU matching)
+        tp = 0
+        matched = set()
+        true_events = data['true']
+
+        # Yksinkertaistettu IoU matching optimointia varten
+        for p in final_preds:
+            best_iou = 0
+            best_idx = -1
+            for j, t in enumerate(true_events):
+                if j in matched: continue
+                s1, e1 = p
+                s2, e2 = t
+                inter = max(0, min(e1, e2) - max(s1, s2))
+                union = (e1 - s1) + (e2 - s2) - inter
+                iou = inter / union if union > 0 else 0
+                if iou > best_iou: best_iou = iou; best_idx = j
+
+            if best_iou >= 0.2:  # IoU threshold fixed at 0.2 usually
+                tp += 1
+                matched.add(best_idx)
+
+        fp = len(final_preds) - tp
+        fn = len(true_events) - tp
+
+        total_tp += tp
+        total_fp += fp
+        total_fn += fn
+
+        # Subject specific F1
+        prec = tp / (tp + fp + 1e-6)
+        rec = tp / (tp + fn + 1e-6)
+        f1 = 2 * prec * rec / (prec + rec + 1e-6)
+        subject_results[subject_id] = f1
+
+    # Global Average F1 (Macro Average over subjects)
+    avg_f1 = np.mean(list(subject_results.values()))
+
+    # Palautetaan tulos dictionaryna
+    return {
+        'threshold': cfg['threshold'],
+        'min_duration': cfg['min_duration'],
+        'merge_gap': cfg['merge_gap'],
+        'use_power_check': cfg['use_power_check'],
+        'power_ratio': cfg['power_ratio'],
+        'freq_low': f_low,
+        'freq_high': f_high,
+        'Avg_F1': avg_f1,
+        'Total_TP': total_tp,
+        'Total_FP': total_fp,
+        'Total_FN': total_fn,
+        **subject_results  # Purkaa potilaskohtaiset tulokset sarakkeiksi
+    }
 
 
-def calculate_f1_fast(pred_events, true_events):
-    tp = 0
-    matched = set()
-    for p in pred_events:
-        best_iou = 0
-        best_idx = -1
-        for j, t in enumerate(true_events):
-            if j in matched: continue
-            s1, e1 = p
-            s2, e2 = t
-            inter = max(0, min(e1, e2) - max(s1, s2))
-            union = (e1 - s1) + (e2 - s2) - inter
-            iou = inter / union if union > 0 else 0
-            if iou > best_iou: best_iou = iou; best_idx = j
+def run_optimizer():
+    # --- ARGUMENT PARSING ---
+    parser = argparse.ArgumentParser(description="Run Grid Search Optimization on Trained Models")
+    parser.add_argument('--run_name', type=str, default=None,
+                        help='Name of the run folder in model_reports (e.g., LOSO_run_...)')
+    args = parser.parse_args()
 
-        if best_iou >= 0.2:
-            tp += 1
-            matched.add(best_idx)
+    # Määritä ajettava kansio
+    run_folder_name = args.run_name if args.run_name else MANUAL_RUN_NAME
 
-    fp = len(pred_events) - tp
-    fn = len(true_events) - tp
-    prec = tp / (tp + fp + 1e-6)
-    rec = tp / (tp + fn + 1e-6)
-    f1 = 2 * prec * rec / (prec + rec + 1e-6)
-    return f1, prec, rec, tp, fp
-
-
-def run_master_optimization():
-    log.info("--- STARTING MASTER OPTIMIZATION ---")
-    log.info(f"Using Configuration from config.py:")
-    log.info(f"  Instance Norm:   {DATA_PARAMS.get('use_instance_norm', 'Not Set')}")
-    log.info(f"  Included Stages: {DATA_PARAMS.get('included_stages', 'All')}")
+    log.info("--- STARTING OPTIMIZATION ---")
 
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     if torch.backends.mps.is_available(): device = torch.device('mps')
 
+    # Path setup
     current_file_path = Path(__file__).resolve()
     project_root = current_file_path.parent
     processed_data_path = project_root / "diagnostics_plots" / "processed_data"
     reports_root = project_root / "model_reports"
 
     if not reports_root.exists():
-        log.error(f"Report directory {reports_root} does not exist. Run main.py first.")
+        log.error(f"Report directory {reports_root} does not exist.")
         return
 
-    # --- FOLDER SELECTION LOGIC ---
-    if MANUAL_RUN_NAME:
-        target_dir = reports_root / MANUAL_RUN_NAME
-        if not target_dir.exists():
-            log.error(f"Manual run directory not found: {target_dir}")
+    # Folder selection logic
+    if run_folder_name:
+        latest_run_dir = reports_root / run_folder_name
+        if not latest_run_dir.exists():
+            log.error(f"Manual run directory not found: {latest_run_dir}")
             return
-        latest_run_dir = target_dir
-        log.info(f"Using MANUALLY specified run: {latest_run_dir.name}")
+        log.info(f"Using SPECIFIED run: {latest_run_dir.name}")
     else:
         all_runs = sorted([d for d in reports_root.iterdir() if d.is_dir() and "LOSO_run" in d.name])
         if not all_runs:
-            log.error("No LOSO runs found in model_reports!")
+            log.error("No LOSO runs found!")
             return
         latest_run_dir = all_runs[-1]
-        log.info(f"Using models from LATEST run: {latest_run_dir.name}")
+        log.info(f"Using LATEST run: {latest_run_dir.name}")
+
+    # --- PHASE 1: CACHE PREDICTIONS (LOAD ONCE) ---
+    log.info("Phase 1: Loading Data & Caching Model Predictions...")
 
     subject_cache = {}
     fs = DATA_PARAMS['fs']
     step_samples = int((DATA_PARAMS['window_sec'] - DATA_PARAMS['overlap_sec']) * fs)
 
-    log.info("Phase 1: Caching Model Predictions (Best & SWA separated)...")
-
     for i, subject_id in enumerate(ALL_SUBJECTS):
         fold_num = i + 1
         try:
+            # Lataa vain Test-data (käytetään tyhjiä listoja train/val)
             _, _, test_loader = get_dataloaders(str(processed_data_path), 16, [], [], [subject_id], 1.0)
         except Exception as e:
             log.warning(f"Could not load data for {subject_id}: {e}")
             continue
 
         if len(test_loader) == 0:
-            log.warning(f"Test loader empty for {subject_id} (maybe filtered out completely?). Skipping.")
             continue
 
+        # Etsi fold-kansio
         fold_dirs = [d for d in latest_run_dir.iterdir() if f"Fold_{fold_num}" in d.name]
         if not fold_dirs:
             log.warning(f"Model folder for Fold {fold_num} not found. Skipping {subject_id}.")
             continue
-
         fold_dir = fold_dirs[0]
 
+        # Alusta mallit
         model_best = GatedUNet(dropout_rate=0.0).to(device)
         model_swa = GatedUNet(dropout_rate=0.0).to(device)
 
@@ -204,6 +287,7 @@ def run_master_optimization():
             log.warning(f"No model weights found for {subject_id}. Skipping.")
             continue
 
+        # Inference loop
         probs_best, probs_swa = [], []
         all_masks, all_raw = [], []
 
@@ -216,6 +300,7 @@ def run_master_optimization():
                 if has_best:
                     m, g = model_best(inputs)
                     p = torch.sigmoid(m) * torch.sigmoid(g).unsqueeze(2)
+                    # TTA
                     m_f, g_f = model_best(inputs_flip)
                     p_f = torch.flip(torch.sigmoid(m_f), dims=[2]) * torch.sigmoid(g_f).unsqueeze(2)
                     avg_p = (p + p_f) / 2.0
@@ -225,15 +310,16 @@ def run_master_optimization():
                 if has_swa:
                     m, g = model_swa(inputs)
                     p = torch.sigmoid(m) * torch.sigmoid(g).unsqueeze(2)
+                    # TTA
                     m_f, g_f = model_swa(inputs_flip)
                     p_f = torch.flip(torch.sigmoid(m_f), dims=[2]) * torch.sigmoid(g_f).unsqueeze(2)
                     avg_p = (p + p_f) / 2.0
                     probs_swa.append(avg_p.cpu().float())
 
                 all_masks.append(masks.cpu().float())
-                all_raw.append(inputs[:, 0, :].cpu().float())
+                all_raw.append(inputs[:, 0, :].cpu().float())  # Tallenna Channel 1 (Raw EEG)
 
-        # Stitching
+        # Stitching (yhdistä ikkunat jatkuvaksi signaaliksi)
         cache_entry = {'raw': None, 'true': None, 'best': None, 'swa': None}
 
         mask_tensor = torch.cat(all_masks, dim=0).unsqueeze(1)
@@ -242,6 +328,7 @@ def run_master_optimization():
         mask_1d = _stitch_predictions_1d(mask_tensor, step_samples)
         raw_1d = _stitch_predictions_1d(raw_tensor, step_samples)
 
+        # Etsi Ground Truth tapahtumat kerran
         true_mask = mask_1d > 0.5
         lbl, _ = label(true_mask)
         slc = find_objects(lbl)
@@ -259,107 +346,71 @@ def run_master_optimization():
             cache_entry['swa'] = _stitch_predictions_1d(p_tensor, step_samples)
 
         subject_cache[subject_id] = cache_entry
+        log.info(f"Cached predictions for {subject_id}")
 
     if not subject_cache:
         log.error("No valid data cached. Aborting.")
         return
 
-    # 2. GRID SEARCH
-    log.info("Phase 2: Grid Search & Optimization...")
+    # --- PHASE 2: PARALLEL GRID SEARCH ---
+    log.info("Phase 2: Running Parallel Grid Search...")
 
     keys = PARAM_GRID.keys()
     values = (PARAM_GRID[key] for key in keys)
     combinations = [dict(zip(keys, v)) for v in itertools.product(*values)]
 
-    # Tracking Results
-    best_global_results = {
-        'Best': {'f1': 0.0, 'cfg': {}},
-        'SWA': {'f1': 0.0, 'cfg': {}},
-        'Ensemble': {'f1': 0.0, 'cfg': {}}
-    }
+    # Suodata turhat kombinaatiot pois (jos power_check=False, ratio/freq ei vaikuta)
+    filtered_combinations = []
+    seen_configs = set()
 
-    personal_bests = {sub: {m: {'f1': 0.0, 'res_str': ''} for m in TEST_MODES} for sub in ALL_SUBJECTS}
+    for cfg in combinations:
+        # Luo yksilöivä avain
+        if not cfg['use_power_check']:
+            # Jos check on pois, pakota nämä arvot vakioiksi duplikaattien välttämiseksi
+            cfg['power_ratio'] = 0.0
+            cfg['freq_low'] = 0.0
+            cfg['freq_high'] = 0.0
 
-    for cfg in tqdm(combinations, desc="Testing Configs"):
-        if not cfg['use_power_check'] and cfg['power_ratio'] != PARAM_GRID['power_ratio'][0]:
-            continue
+        # Muuta dictionary tupleksi jotta voidaan käyttää setissä
+        cfg_tuple = tuple(sorted(cfg.items()))
+        if cfg_tuple not in seen_configs:
+            seen_configs.add(cfg_tuple)
+            filtered_combinations.append(cfg)
 
-        min_samp = int(cfg['min_duration'] * fs)
-        merge_samp = int(cfg['merge_gap'] * fs)
+    log.info(f"Testing {len(filtered_combinations)} unique combinations using all CPU cores...")
 
-        mode_f1s = {'Best': [], 'SWA': [], 'Ensemble': []}
+    # Aja rinnakkain (n_jobs=-1 käyttää kaikkia ytimiä)
+    results = Parallel(n_jobs=-1)(
+        delayed(process_single_combination)(cfg, subject_cache, fs)
+        for cfg in tqdm(filtered_combinations, desc="Optimizing")
+    )
 
-        for subject_id in ALL_SUBJECTS:
-            if subject_id not in subject_cache: continue
-            data = subject_cache[subject_id]
+    # --- SAVE RESULTS ---
+    df = pd.DataFrame(results)
+    df = df.sort_values(by='Avg_F1', ascending=False)
 
-            for mode in TEST_MODES:
-                prob_map = None
+    output_csv = "optimization_results_full.csv"
+    df.to_csv(output_csv, index=False)
 
-                if mode == 'Best':
-                    prob_map = data['best']
-                elif mode == 'SWA':
-                    prob_map = data['swa']
-                elif mode == 'Ensemble':
-                    if data['best'] is not None and data['swa'] is not None:
-                        prob_map = (data['best'] + data['swa']) / 2.0
-                    elif data['best'] is not None:
-                        prob_map = data['best']
-                    elif data['swa'] is not None:
-                        prob_map = data['swa']
-
-                if prob_map is None: continue
-
-                preds = find_events_fast(
-                    prob_map, data['raw'],
-                    cfg['threshold'], min_samp, merge_samp,
-                    cfg['use_power_check'], cfg['power_ratio'], fs
-                )
-
-                f1, prec, rec, tp, fp = calculate_f1_fast(preds, data['true'])
-                mode_f1s[mode].append(f1)
-
-                if f1 > personal_bests[subject_id][mode]['f1']:
-                    # KEY FIX IS HERE: cfg['use_power_check'] instead of 'power_check'
-                    res_str = f"[{mode}] F1 {f1:.4f} (P:{prec:.2f} R:{rec:.2f}) | Th:{cfg['threshold']} G:{cfg['merge_gap']} Pow:{cfg['use_power_check']}/{cfg['power_ratio']}"
-                    personal_bests[subject_id][mode] = {
-                        'f1': f1,
-                        'res_str': res_str,
-                        'cfg': cfg.copy()
-                    }
-
-        for mode in TEST_MODES:
-            if not mode_f1s[mode]: continue
-            avg_f1 = np.mean(mode_f1s[mode])
-
-            if avg_f1 > best_global_results[mode]['f1']:
-                best_global_results[mode]['f1'] = avg_f1
-                best_global_results[mode]['cfg'] = cfg.copy()
-
-    # --- REPORTING ---
     log.info("=" * 80)
-    log.info("FINAL RESULTS BY MODE")
+    log.info(f"OPTIMIZATION COMPLETE. Saved to {output_csv}")
     log.info("=" * 80)
 
-    for mode in TEST_MODES:
-        res = best_global_results[mode]
-        log.info(f"MODE: {mode.upper()}")
-        log.info(f"  Best Average F1: {res['f1']:.4f}")
-        log.info(f"  Best Config:     {res['cfg']}")
-        log.info("-" * 40)
+    best_row = df.iloc[0]
+    log.info(f"WINNER CONFIGURATION (F1: {best_row['Avg_F1']:.4f}):")
+    log.info(f"  Threshold:    {best_row['threshold']}")
+    log.info(f"  Min Duration: {best_row['min_duration']} s")
+    log.info(f"  Merge Gap:    {best_row['merge_gap']} s")
+    log.info(f"  Power Check:  {best_row['use_power_check']}")
+    if best_row['use_power_check']:
+        log.info(f"  Power Ratio:  {best_row['power_ratio']}")
+        log.info(f"  Freq Band:    {best_row['freq_low']} - {best_row['freq_high']} Hz")
+    log.info("-" * 40)
 
-    log.info("\nORACLE RESULTS PER SUBJECT (Best found configuration for each)")
-    log.info("-" * 80)
-
-    for sub in ALL_SUBJECTS:
-        if sub in personal_bests:
-            best_mode = max(TEST_MODES, key=lambda m: personal_bests[sub][m]['f1'])
-            best_entry = personal_bests[sub][best_mode]
-            if best_entry['f1'] > 0:
-                log.info(f"{sub} WINNER -> {best_entry['res_str']}")
-            else:
-                log.info(f"{sub} - No positive results found.")
+    # Näytä Excerpt 4:n tulos erikseen
+    if 'excerpt4' in best_row:
+        log.info(f"Excerpt 4 F1 with this config: {best_row['excerpt4']:.4f}")
 
 
 if __name__ == "__main__":
-    run_master_optimization()
+    run_optimizer()

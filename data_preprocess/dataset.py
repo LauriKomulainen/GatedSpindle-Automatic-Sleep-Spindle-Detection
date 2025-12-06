@@ -7,8 +7,8 @@ from torch.utils.data import Dataset, DataLoader, ConcatDataset, Subset
 import logging
 import random
 from scipy.signal import butter, filtfilt
-from config import DATA_PARAMS  # Importataan jotta nähdään instance norm asetus
-from data_preprocess.normalization import normalize_data  # Käytetään samaa funktiota
+from config import DATA_PARAMS, METRIC_PARAMS
+from data_preprocess.normalization import normalize_data
 
 log = logging.getLogger(__name__)
 
@@ -46,23 +46,22 @@ class SpindleDataset(Dataset):
         self.fs = 200.0
         self.augment = augment
         self.augmentor = RandomAugment1D(p=0.5)
-        self.use_instance_norm = DATA_PARAMS['use_instance_norm']
+        self.use_instance_norm = DATA_PARAMS.get('use_instance_norm', True)
+
+        self.low_f = METRIC_PARAMS['spindle_freq_low']
+        self.high_f = METRIC_PARAMS['spindle_freq_high']
 
     def __len__(self):
         return self.length
 
     def __getitem__(self, idx):
-        # Channel 1: Raw EEG (Tämä on jo normalisoitu data_handler.py:ssä joko global tai instance)
+        # Channel 1: Raw EEG
         raw_signal = np.array(self.x_mmap[idx], dtype=np.float32)
         ch1 = torch.tensor(raw_signal, dtype=torch.float32).unsqueeze(0)
 
-        # Channel 2: Sigma Filtered (Luodaan lennossa)
-        # Huom: Jos raw_signal on jo normalisoitu, filtteröinti toimii, mutta amplitudi on skaalattu.
-        sigma_signal = butter_bandpass_filter(raw_signal, 11.0, 16.0, self.fs, order=4)
+        # Channel 2: Sigma Filtered
+        sigma_signal = butter_bandpass_filter(raw_signal, self.low_f, self.high_f, self.fs, order=4)
 
-        # --- INSTANCE NORM FIX FOR CHANNEL 2 ---
-        # Jos käytämme Instance Normia, myös Sigma-kanava kannattaa normalisoida
-        # jotta se on samalla skaalalla kuin Channel 1.
         if self.use_instance_norm:
             sigma_signal = normalize_data(sigma_signal)
 
@@ -73,9 +72,9 @@ class SpindleDataset(Dataset):
         if self.augment:
             signal_tensor = self.augmentor(signal_tensor)
 
+        # --- LABEL LOADING (HARD LABELS) ---
         mask_1d = np.array(self.y_mmap[idx], dtype=np.float32)
         mask_tensor = torch.tensor(mask_1d, dtype=torch.float32)
-
         has_spindle = 1.0 if np.max(mask_1d) > 0.5 else 0.0
         label_tensor = torch.tensor(has_spindle, dtype=torch.float32).unsqueeze(0)
 

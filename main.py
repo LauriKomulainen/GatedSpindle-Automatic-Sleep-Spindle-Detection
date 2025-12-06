@@ -3,6 +3,7 @@
 import gc
 import os
 import torch
+import torch.nn as nn
 import logging
 import random
 import numpy as np
@@ -13,7 +14,16 @@ from utils.logger import setup_logging
 from data_preprocess.dataset import get_dataloaders
 from UNET_model.model import GatedUNet, train_model
 from UNET_model.evaluation_metrics import compute_event_based_metrics, find_optimal_threshold
-from config import TRAINING_PARAMS, DATA_PARAMS, TEST_FAST_FRACTION, CV_CONFIG, INFERENCE_PARAMS
+from config import (
+    TRAINING_PARAMS,
+    DATA_PARAMS,
+    TEST_FAST_FRACTION,
+    CV_CONFIG,
+    INFERENCE_PARAMS,
+    METRIC_PARAMS,
+    PATHS
+)
+
 
 def set_seed(seed=1):
     random.seed(seed)
@@ -25,27 +35,84 @@ def set_seed(seed=1):
     torch.backends.cudnn.benchmark = False
     print(f"Random Seed set to: {seed}")
 
+
+# --- Helper Class for Ensemble ---
+class EnsembleWrapper(nn.Module):
+    def __init__(self, model_a, model_b):
+        super().__init__()
+        self.model_a = model_a
+        self.model_b = model_b
+
+    def forward(self, x):
+        m1, g1 = self.model_a(x)
+        m2, g2 = self.model_b(x)
+        return (m1 + m2) / 2.0, (g1 + g2) / 2.0
+
+    def eval(self):
+        self.model_a.eval()
+        self.model_b.eval()
+
+
+def log_metrics(logger, label, m):
+    """Helper function for clean logging of metrics."""
+    logger.info(
+        f"[{label:<4}] "
+        f"F1: {m['F1-score']:.4f} | "
+        f"Prec: {m['Precision']:.4f} | "
+        f"Rec: {m['Recall']:.4f} | "
+        f"TP: {int(m['TP (events)']):<3} | "
+        f"FP: {int(m['FP (events)']):<3} | "
+        f"FN: {int(m['FN (events)']):<3}"
+    )
+
+
+def log_param_dict(logger, name, d):
+    """Helper function to pretty-print configuration dictionaries."""
+    logger.info(f"--- {name} ---")
+    for k, v in d.items():
+        logger.info(f"  {k:<25}: {v}")
+
+
 if __name__ == "__main__":
     set_seed(1)
+
+    # Ensure output directory exists
+    os.makedirs(PATHS['output_dir'], exist_ok=True)
+
     setup_logging("training.log")
     log = logging.getLogger(__name__)
 
-    FAST_TEST_FRACTION = TEST_FAST_FRACTION['FAST_TEST_FRACTION']
+    # --- 1. LOG CONFIGURATION ---
+    log.info("=" * 60)
+    log.info("EXPERIMENT CONFIGURATION")
+    log.info("=" * 60)
+    log_param_dict(log, "TRAINING_PARAMS", TRAINING_PARAMS)
+    log_param_dict(log, "DATA_PARAMS", DATA_PARAMS)
+    log_param_dict(log, "INFERENCE_PARAMS", INFERENCE_PARAMS)
+    log_param_dict(log, "METRIC_PARAMS", METRIC_PARAMS)
+    log_param_dict(log, "CV_CONFIG", CV_CONFIG)
+    log_param_dict(log, "TEST_FAST_FRACTION", TEST_FAST_FRACTION)
+    log_param_dict(log, "PATHS", PATHS)
+    log.info("=" * 60)
 
+    FAST_TEST_FRACTION = TEST_FAST_FRACTION['FAST_TEST_FRACTION']
     params = TRAINING_PARAMS
+
+    # Check SWA config
+    USE_SWA = params.get('use_swa', False)
+
     if FAST_TEST_FRACTION < 1.0:
         log.warning(f"RUNNING IN FAST TEST MODE (DATA FRACTION: {FAST_TEST_FRACTION})")
-        params['num_epochs'] = 1
-        params['early_stopping_patience'] = 5
+        params['num_epochs'] = 2
+        params['early_stopping_patience'] = 1
 
-    log.info("Starting GATED U-Net Training: Leave-One-Subject-Out (LOSO)")
+    log.info(f"Starting Training. SWA={USE_SWA}, Inference Mode={INFERENCE_PARAMS['inference_mode']}")
 
-    result_dir = "model_reports"
     timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-    output_dir = os.path.join(result_dir, f"LOSO_run_{timestamp}")
+    output_dir = os.path.join(PATHS['output_dir'], f"LOSO_run_{timestamp}")
     os.makedirs(output_dir, exist_ok=True)
 
-    all_subjects = ['excerpt1', 'excerpt2', 'excerpt3', 'excerpt4', 'excerpt5', 'excerpt6']
+    all_subjects = DATA_PARAMS['subjects_list']
     all_metrics = defaultdict(list)
 
     selected_folds = CV_CONFIG['folds_to_run']
@@ -57,14 +124,15 @@ if __name__ == "__main__":
         train_subject_ids = [s for s in all_subjects if s != test_subject_id[0] and s != val_subject_id[0]]
 
         fold_name = f"Fold_{k + 1}_(Test={test_subject_id[0]})"
-        log.info(f"STARTING FOLD: {fold_name}")
+        log.info(f"\n{'=' * 20} STARTING FOLD: {fold_name} {'=' * 20}")
 
         fold_output_dir = os.path.join(output_dir, fold_name)
         os.makedirs(fold_output_dir, exist_ok=True)
 
+        # 1. Load Data
         try:
             train_loader, val_loader, test_loader = get_dataloaders(
-                processed_data_dir="./diagnostics_plots/processed_data",
+                processed_data_dir=PATHS['processed_data_dir'],
                 batch_size=params['batch_size'],
                 train_subject_ids=train_subject_ids,
                 val_subject_ids=val_subject_id,
@@ -77,6 +145,7 @@ if __name__ == "__main__":
 
         model = GatedUNet(dropout_rate=params['dropout_rate'])
 
+        # 2. Train
         train_losses, val_losses = train_model(
             model=model,
             train_loader=train_loader,
@@ -86,50 +155,93 @@ if __name__ == "__main__":
             num_epochs=params['num_epochs'],
             early_stopping_patience=params['early_stopping_patience'],
             output_dir=fold_output_dir,
-            fs=DATA_PARAMS['fs']
+            fs=DATA_PARAMS['fs'],
+            use_swa=USE_SWA
         )
 
-        best_model_path = os.path.join(fold_output_dir, 'unet_model_best.pth')
-        if os.path.exists(best_model_path):
-            model.load_state_dict(torch.load(best_model_path))
+        # 3. Evaluation - COMPARE METHODS
+        device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
-        fixed_thresh = INFERENCE_PARAMS['fixed_threshold']
-
-        if fixed_thresh is not None:
-            log.info(f"Using FIXED threshold from config: {fixed_thresh}")
-            optimal_thresh = fixed_thresh
+        # Load Best Model
+        model_best = GatedUNet(dropout_rate=0.0).to(device)
+        best_path = os.path.join(fold_output_dir, 'unet_model_best.pth')
+        if os.path.exists(best_path):
+            model_best.load_state_dict(torch.load(best_path, map_location=device))
         else:
-            log.info("Finding optimal decision threshold using validation data...")
-            optimal_thresh = find_optimal_threshold(model, val_loader)
+            log.error("Best model not found!")
+            continue
+
+        # Load SWA Model
+        model_swa = None
+        if USE_SWA:
+            swa_path = os.path.join(fold_output_dir, 'unet_model_swa.pth')
+            if os.path.exists(swa_path):
+                model_swa = GatedUNet(dropout_rate=0.0).to(device)
+                model_swa.load_state_dict(torch.load(swa_path, map_location=device))
+            else:
+                log.warning("SWA model wanted but not found.")
+
+        # Determine Threshold (using Best model usually)
+        if INFERENCE_PARAMS['fixed_threshold'] is not None:
+            optimal_thresh = INFERENCE_PARAMS['fixed_threshold']
+            log.info(f"Using FIXED threshold: {optimal_thresh}")
+        else:
+            log.info("Finding optimal threshold...")
+            optimal_thresh = find_optimal_threshold(model_best, val_loader)
             log.info(f"Optimal threshold determined: {optimal_thresh:.2f}")
 
-        log.info(f"Computing metrics (Threshold: {optimal_thresh}, Power Check: {INFERENCE_PARAMS['use_power_check']})")
+        log.info(f"\n--- COMPARISON FOR {test_subject_id[0]} (Thresh: {optimal_thresh}) ---")
+        log.info(f"{'Type':<6} {'F1':<8} {'Prec':<8} {'Rec':<8} {'TP':<5} {'FP':<5} {'FN':<5}")
+        log.info("-" * 60)
 
-        metrics = compute_event_based_metrics(
-            model,
-            test_loader,
-            threshold=optimal_thresh,
-            subject_id=test_subject_id[0],
-            output_dir=fold_output_dir,
-            use_power_check=INFERENCE_PARAMS['use_power_check']
-        )
+        # A. Evaluate BEST
+        metrics_best = compute_event_based_metrics(model_best, test_loader, optimal_thresh, test_subject_id[0],
+                                                   fold_output_dir, INFERENCE_PARAMS['use_power_check'])
+        log_metrics(log, "BEST", metrics_best)
 
-        log.info(f"Fold Complete.")
-        del model, train_loader, val_loader, test_loader
+        metrics_swa = None
+        metrics_ens = None
+
+        # B. Evaluate SWA
+        if model_swa:
+            metrics_swa = compute_event_based_metrics(model_swa, test_loader, optimal_thresh, test_subject_id[0],
+                                                      fold_output_dir, INFERENCE_PARAMS['use_power_check'])
+            log_metrics(log, "SWA", metrics_swa)
+
+            # C. Evaluate ENSEMBLE
+            ensemble_model = EnsembleWrapper(model_best, model_swa).to(device)
+            metrics_ens = compute_event_based_metrics(ensemble_model, test_loader, optimal_thresh, test_subject_id[0],
+                                                      fold_output_dir, INFERENCE_PARAMS['use_power_check'])
+            log_metrics(log, "ENS", metrics_ens)
+
+        log.info("-" * 60)
+
+        # 4. Select Final Metrics based on Config
+        selected_mode = INFERENCE_PARAMS['inference_mode']
+        final_metrics = metrics_best  # default
+
+        if selected_mode == 'swa' and metrics_swa:
+            final_metrics = metrics_swa
+        elif selected_mode == 'ensemble' and metrics_ens:
+            final_metrics = metrics_ens
+
+        log.info(f"--> SELECTED FINAL METRICS ({selected_mode.upper()}): F1 {final_metrics['F1-score']:.4f}")
+
+        for key, value in final_metrics.items():
+            all_metrics[key].append(value)
+
+        del model, model_best, model_swa
         torch.cuda.empty_cache()
         gc.collect()
 
-        log.info(f"Results for {test_subject_id[0]}:\n")
-        for key, value in metrics.items():
-            log.info(f"  {key}: {value:.4f}")
-            all_metrics[key].append(value)
-
-    log.info("=" * 80)
+    log.info("\n" + "=" * 80)
     log.info("FULL LOSO CROSS-VALIDATION COMPLETE")
     if len(all_metrics) > 0:
+        log.info(f"{'Metric':<15} {'Mean':<10} {'Std':<10}")
+        log.info("-" * 40)
         for key, values in all_metrics.items():
             mean = np.mean(values)
             std = np.std(values)
-            log.info(f"Average {key}: {mean:.4f} (± {std:.4f})")
+            log.info(f"{key:<15} {mean:.4f}     (± {std:.4f})")
 
     log.info(f"All results saved to directory: {output_dir}")

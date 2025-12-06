@@ -1,23 +1,16 @@
 # config.py
 
-"""
-Central configuration file for all training hyperparameters and data settings.
-"""
+import os
 
-# --- Training Hyperparameters ---
-TRAINING_PARAMS = {
-    'batch_size': 16,
-    'learning_rate': 1e-4,
-    'dropout_rate': 0.2,
-    'optimizer_type': 'Adam',
-    'num_epochs': 200,
-    'early_stopping_patience': 25
+# --- File Paths ---
+PATHS = {
+    "raw_data_dir": "path",  # Update this to your local path
+    "processed_data_dir": "./data/processed",
+    "output_dir": "./model_reports"
 }
 
-CV_CONFIG = {
-    'folds_to_run': None
-    #'folds_to_run': [3,4,5] # Excerpt 4
-}
+os.makedirs(PATHS["processed_data_dir"], exist_ok=True)
+os.makedirs(PATHS["output_dir"], exist_ok=True)
 
 # --- Data & Preprocessing Parameters ---
 DATA_PARAMS = {
@@ -27,22 +20,41 @@ DATA_PARAMS = {
     'lowcut': 0.3,
     'highcut': 30.0,
     'filter_order': 4,
-
-    # --- NEW: Instance Normalization & Hypnogram Filtering ---
-    # True: Normalisoi jokainen 5s ikkuna erikseen (suositeltu).
-    # False: Normalisoi koko signaali kerralla ennen pilkkomista (vanha tapa).
     'use_instance_norm': True,
-
-    # Mitkä univaiheet otetaan mukaan koulutusdataan?
-    # DREAMS koodaus:
-    # 5=Wake, 4=REM, 3=S1, 2=S2, 1=S3, 0=S4
     'included_stages': [2, 1, 0],
+    'hypnogram_resolution_sec': 5.0,
 
-    # Hypnogrammin resoluutio sekunneissa (DREAMS readme/kuva mainitsi 5s)
-    'hypnogram_resolution_sec': 5.0
+    # --- SUBJECT SELECTION ---
+    # List subjects to include in processing and training.
+    # Note: Excerpts 7 & 8 only have one scorer available.
+    'subjects_list': ['excerpt1', 'excerpt2', 'excerpt3', 'excerpt4', 'excerpt5', 'excerpt6'],
+
+    # --- ANNOTATION MERGE STRATEGY ---
+    # 'UNION':        Accept spindle if marked by Scorer 1 OR Scorer 2. (More data, higher recall).
+    # 'INTERSECTION': Accept spindle only if marked by BOTH scorers. (Higher confidence).
+    # 'SCORER1':      Use annotations from Scorer 1 only.
+    # Note: Excerpts 7 & 8 automatically default to Scorer 1 as Scorer 2 data is missing.
+    'annotation_merge_mode': 'UNION'
 }
 
-# --- Event Metric Parameters ---
+# --- Training Hyperparameters ---
+TRAINING_PARAMS = {
+    'batch_size': 16,
+    'learning_rate': 1e-4,
+    'dropout_rate': 0.2,
+    'optimizer_type': 'Adam',
+    'weight_decay': 1e-4,
+    'ademamix_alpha': 5.0,
+    'ademamix_betas': (0.9, 0.999, 0.9999),
+    'num_epochs': 1,
+    'early_stopping_patience': 25,
+    'use_swa': True
+}
+
+CV_CONFIG = {
+    'folds_to_run': None
+}
+
 METRIC_PARAMS = {
     'spindle_freq_low': 11.0,
     'spindle_freq_high': 16.0,
@@ -57,5 +69,9 @@ TEST_FAST_FRACTION = {
 
 INFERENCE_PARAMS = {
     'fixed_threshold': 0.55,
-    'use_power_check': False
+    'use_power_check': False,
+    'inference_mode': 'ensemble',
+    'use_hybrid_filter': False,
+    'hybrid_high_conf': 0.85,
+    'hybrid_min_power': 0.03
 }

@@ -1,42 +1,108 @@
-# Sleep Spindle Detection: Gated U-Net & Dual-Model Ensemble
+# GatedSpindle: Automatic Sleep Spindle Detection with Gated U-Net and Ensemble framework
 
-This repository implements a deep learning framework for robust sleep spindle detection using a **Gated U-Net** architecture. The system is specifically engineered to handle high inter-subject variability and suppress false positives in noisy EEG recordings by enforcing physiological validity through stage-stratified learning.
+This repository contains a deep learning framework designed for the robust detection of sleep spindles in electroencephalography (EEG) signals. The system utilizes a 1D Gated U-Net architecture combined with Stochastic Weight Averaging (SWA) and an ensemble inference strategy to address the challenges of low signal-to-noise ratios and high inter-subject variability inherent in sleep EEG data.
 
-## Key Architectural Features
+The method has been developed and validated using the DREAMS Sleep Spindles Database.
 
-### 1. Advanced Data Pipeline (Physiologically Aware)
-To ensure the model learns valid physiological features rather than artifacts, the pipeline employs strict quality control:
-* **Stage-Stratified Filtering:** Training and inference are explicitly restricted to NREM stages 2 and 3 (N2+N3). This eliminates "Wake" and "REM" epochs where spindle-like artifacts (e.g., alpha waves) often cause false positives.
-* **Instance Normalization:** Instead of global normalization, each 5-second window is normalized independently (Z-score). This allows the model to detect spindles based on morphology and relative frequency content, regardless of amplitude fluctuations across the recording.
-* **Dual-Channel Input:** The model receives a 2-channel time-series (200 Hz):
-    1.  **Raw EEG:** Provides broad spectral context.
-    2.  **Sigma-filtered (11-16 Hz):** Explicitly highlights the spindle frequency band.
+## System Environment
 
-### 2. Gated U-Net (Architecture) The core model is a specialized 1D U-Net designed for segmentation in low-SNR environments:
-* **Residual Blocks:** The encoder and decoder utilize residual connections (Conv1d + InstanceNorm + ReLU) to facilitate deep feature learning and prevent gradient degradation.
-* **Global Gating Mechanism:** A parallel classification branch analyzes the entire window to output a global probability score (0-1). This "gate" suppresses the segmentation output if the window is unlikely to contain a spindle, significantly reducing False Positives.
+The code was developed and tested in the following environment:
+* **Hardware:** MacBook Pro (M4 Chip, Apple Silicon)
+* **Software:** Python 3.13.0, PyTorch
+* **Dependencies:** MNE, PyTorch, SciPy, NumPy, Pandas (see requirements).
 
-### 3. Robust Inference Strategy
-The final prediction is not the result of a single pass but a stabilized ensemble:
-* **Dual-Model Ensemble:** Predictions are averaged from two distinct model checkpoints:
-    1.  **Best Val Loss:** The model snapshot with the lowest validation loss.
-    2.  **SWA (Stochastic Weight Averaging):** A model utilizing weights averaged over the final training epochs (e.g., 90-150), ensuring a flatter and more generalizable local minimum.
-* **Test-Time Augmentation (TTA):** Signals are processed in both original and time-flipped orientations, with results averaged to reduce uncertainty.
+## Performance Evaluation
 
----
+The model's performance was evaluated using Leave-One-Subject-Out (LOSO) cross-validation on the DREAMS database. The final predictions were generated using an ensemble of the best validation model and the SWA model.
 
-## Performance Results (LOSO Cross-Validation)
+**Training Configuration:**
+* **Optimizer:** Adam (`weight_decay=1e-4`)
+* **Regularization:** Dropout (0.2) + SWA
+* **Preprocessing:** 200 Hz sampling rate, 0.3–30 Hz bandpass filter
 
-The model was evaluated using Leave-One-Subject-Out (LOSO) cross-validation on the DREAMS database. By filtering out non-NREM artifacts (Stage Filtering):
+**LOSO Cross-Validation Results:**
 
-| Subject | F1-score | Precision | Recall | TP (Events) | FP (Events) | mIoU (TPs) |
-| :--- | :--- | :--- | :--- | :--- | :--- | :--- |
-| **Excerpt 1** | **0.8061** | 0.8154 | 0.7970 | 106 | 24 | 0.7744 |
-| **Excerpt 2** | **0.7761** | 0.8814 | 0.6933 | 52 | 7 | 0.7921 |
-| **Excerpt 3** | **0.8831** | 0.9189 | 0.8500 | 34 | 3 | 0.7834 |
-| **Excerpt 4** | **0.6977** | 0.8333 | 0.6000 | 15 | 3 | 0.7449 |
-| **Excerpt 5** | **0.7959** | 0.8211 | 0.7723 | 78 | 17 | 0.8124 |
-| **Excerpt 6** | **0.7923** | 0.8632 | 0.7321 | 82 | 13 | 0.8190 |
-| **AVERAGE** | **0.7919** <br> (± 0.0543) | **0.8555** <br> (± 0.0366) | **0.7408** <br> (± 0.0798) | **61.2** | **11.2** | **0.7877** <br> (± 0.0246) |
+| Subject | F1-score | Precision | Recall | TP (Count) | FP (Count) | FN (Count) | mIoU (TPs) |
+| :--- | :--- | :--- | :--- |:-----------|:-----------|:-----------| :--- |
+| **Excerpt 1** | 0.8218 | 0.7958 | 0.8496 | 113        | 29         | 20         | 0.7958 |
+| **Excerpt 2** | 0.7947 | 0.7895 | 0.8000 | 60         | 16         | 15         | 0.8095 |
+| **Excerpt 3** | 0.8434 | 0.8140 | 0.8750 | 35         | 8          | 5          | 0.7735 |
+| **Excerpt 4** | 0.7308 | 0.7037 | 0.7600 | 19         | 8          | 6          | 0.7911 |
+| **Excerpt 5** | 0.7981 | 0.7757 | 0.8218 | 83         | 24         | 18         | 0.8241 |
+| **Excerpt 6** | 0.8213 | 0.8947 | 0.7589 | 85         | 10         | 27         | 0.8248 |
+| **MEAN** | **0.8017** | **0.7956** | **0.8109** | **-**      | **-**      | **-**      | **0.8031** |
 
-*Note: Evaluation is restricted to N2 and N3 sleep stages to ensure biological validity and comparability with ground truth, removing artifacts present in Wake/REM stages.*
+## Methodology
+
+### 1. Data Preprocessing Pipeline
+To ensure high-quality input for the neural network, the raw EEG signals undergo a strict preprocessing pipeline:
+* **Bandpass Filtering:** Signals are filtered between 0.3 Hz and 30 Hz using a 4th-order Butterworth filter to remove DC drift and high-frequency muscle artifacts.
+* **Sleep Stage Stratification:** Training and inference are explicitly restricted to NREM sleep stages (N2 and N3). Epochs classified as Wake or REM are excluded to reduce false positives.
+* **Instance Normalization:** Each 5-second input window is normalized independently (Z-score normalization). This approach mitigates the issue of amplitude variability between different subjects.
+
+### 2. Model Architecture
+The core of the system is a 1D Gated U-Net architecture adapted for time-series segmentation.
+* **Encoder-Decoder Structure:** The network uses a symmetric U-Net design with skip connections to preserve spatial information.
+* **Gating Mechanism:** Sigmoid-based gating units are applied within the skip connections. These gates learn to filter out irrelevant features (noise) from the encoder before they are merged with the decoder features.
+
+### 3. Optimization Strategy
+The training process incorporates advanced techniques to ensure stability:
+* **Stochastic Weight Averaging (SWA):** Weights are averaged over the final training epochs to approximate a broader local minimum in the loss landscape.
+* **Ensemble Inference:** The final detection is an average of the predictions from the "Best Model" (lowest validation loss) and the "SWA Model".
+
+## Configuration and Data Setup
+
+This framework is configured via `config.py`. You must set up your data paths before running the code.
+
+### 1. Path Configuration
+Open `config.py` and locate the `PATHS` dictionary. Update `raw_data_dir` to point to the folder where you downloaded the DREAMS database (.edf and .txt files).
+
+```
+PATHS = {
+    "raw_data_dir": "/absolute/path/to/your/data/raw_DREAMS",
+    "processed_data_dir": "./data/processed",
+    "output_dir": "./model_reports"
+}
+```
+
+### 2. Annotation Merging Strategy
+
+The DREAMS database provides annotations from two independent experts. You can configure how these are combined using `DATA_PARAMS` in `config.py`:
+* UNION: A spindle is accepted if marked by Expert 1 OR Expert 2. This maximizes the number of training events but may include more uncertain spindles. (Default)
+* INTERSECTION: A spindle is accepted only if marked by BOTH scorers.
+
+## Usage Instructions
+
+### 1. Data Preprocessing
+
+Before training, the raw EDF and text files must be processed into tensor format. This step performs filtering, segmentation, and annotation merging based on your configuration.
+```
+python data_handler.py
+```
+* Output: Saves .npy files to processed_data_dir. 
+* Important: If you change filtering parameters (e.g. frequency bands) or the merge mode in `config.py`, you must re-run this script to generate new data
+
+### 2. Model Training
+
+Run the main training loop. This script performs Leave-One-Subject-Out (LOSO) cross-validation.
+```
+python main.py
+```
+* The script loads the preprocessed data. 
+* It trains a model for each fold (holding one subject out for testing). 
+* Logs and detailed CSV error analysis reports are saved to model_reports/.
+
+## Project Structure
+* `config.py`: Central configuration file (paths, hyperparameters). 
+* `main.py`: Primary script for training and evaluation. 
+* `data_handler.py`: Script for loading and preprocessing raw data. 
+* `UNET_model/`: Contains `model.py` (Gated U-Net) and `evaluation_metrics.py`. 
+* `data_preprocess/`: Helper modules (`handler.py`, `bandpassfilter.py`, `normalization.py`). 
+* `utils/`: Logging utilities.
+
+## License & Citation
+This project is open-source and available under the MIT License (see the LICENSE file for details). You are free to use, modify, and distribute this software for research and development purposes.
+
+Citation Request: If you use this model or code in your research or develop it further, please credit this repository.
+
+Contact: If you encounter issues with the model or have questions regarding the implementation, please contact: laurikom(at)student.uef.fi
