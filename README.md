@@ -36,7 +36,7 @@ The model's performance was evaluated using Leave-One-Subject-Out (LOSO) cross-v
 
 ### 1. Data Preprocessing Pipeline
 To ensure high-quality input for the neural network, the raw EEG signals undergo a strict preprocessing pipeline:
-* **Bandpass Filtering:** Signals are filtered between 0.3 Hz and 30 Hz using a 4th-order Butterworth filter to remove DC drift and high-frequency muscle artifacts.
+* **Bandpass Filtering:** Signals are filtered between 0.3 Hz and 30 Hz using a 4th-order Butterworth filter
 * **Sleep Stage Stratification:** Training and inference are explicitly restricted to NREM sleep stages (N2 and N3). Epochs classified as Wake or REM are excluded to reduce false positives.
 * **Instance Normalization:** Each 5-second input window is normalized independently (Z-score normalization). This approach mitigates the issue of amplitude variability between different subjects.
 
@@ -50,11 +50,11 @@ The training process incorporates advanced techniques to ensure stability:
 * **Stochastic Weight Averaging (SWA):** Weights are averaged over the final training epochs to approximate a broader local minimum in the loss landscape.
 * **Ensemble Inference:** The final detection is an average of the predictions from the "Best Model" (lowest validation loss) and the "SWA Model".
 
-## Configuration and Data Setup
+## Configuration
 
 This framework is configured via `config.py`. You must set up your data paths before running the code.
 
-### 1. Path Configuration
+### Path Configuration
 Open `config.py` and locate the `PATHS` dictionary. Update `raw_data_dir` to point to the folder where you downloaded the DREAMS database (.edf and .txt files).
 
 ```
@@ -64,12 +64,6 @@ PATHS = {
     "output_dir": "./model_reports"
 }
 ```
-
-### 2. Annotation Merging Strategy
-
-The DREAMS database provides annotations from two independent experts. You can configure how these are combined using `DATA_PARAMS` in `config.py`:
-* UNION: A spindle is accepted if marked by Expert 1 OR Expert 2. This maximizes the number of training events but may include more uncertain spindles. (Default)
-* INTERSECTION: A spindle is accepted only if marked by BOTH scorers.
 
 ## Usage Instructions
 
