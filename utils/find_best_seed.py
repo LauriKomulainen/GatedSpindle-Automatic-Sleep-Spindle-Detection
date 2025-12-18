@@ -7,10 +7,10 @@ import random
 import gc
 import os
 from utils.logger import setup_logging
-from data_preprocess.dataset import get_dataloaders
-from UNET_model.model import GatedUNet, train_model
-from UNET_model.evaluation_metrics import compute_event_based_metrics, find_optimal_threshold
-from config import TRAINING_PARAMS, DATA_PARAMS, TEST_FAST_FRACTION, INFERENCE_PARAMS
+from core.dataset import get_dataloaders
+from core.model import GatedUNet, train_model
+from core.metrics import compute_event_based_metrics, find_optimal_threshold
+from configs.dreams_config import TRAINING_PARAMS, DATA_PARAMS, TEST_FAST_FRACTION
 
 SEEDS_TO_TRY = [0, 1, 123, 2024, 3407]
 TARGET_FOLD = "excerpt4"

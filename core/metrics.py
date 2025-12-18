@@ -8,7 +8,7 @@ from scipy.ndimage import label, find_objects
 from scipy.signal import welch
 from tqdm import tqdm
 from typing import List, Dict, Tuple
-from config import METRIC_PARAMS, DATA_PARAMS
+from configs.dreams_config import METRIC_PARAMS, DATA_PARAMS
 import gc
 import os
 
@@ -231,20 +231,39 @@ def _calculate_iou(event1, event2):
     return intersection / union if union > 0 else 0.0
 
 
-def _stitch_predictions_1d(all_preds: torch.Tensor, step_samples: int) -> np.ndarray:
+def _stitch_predictions_1d_spindleunet(all_preds: torch.Tensor, step_samples: int) -> np.ndarray:
+    """
+    Yhdistää ennusteet SpindleU-Net -menetelmällä:
+    Säilyttää vain ikkunan keskimmäisen puolikkaan (indices L/4 - 3L/4).
+    """
     num_windows, _, window_len = all_preds.shape
     final_len = (num_windows - 1) * step_samples + window_len
-    stitched_sum = torch.zeros(final_len, dtype=torch.float32)
-    stitched_weights = torch.zeros(final_len, dtype=torch.float32)
-    window_weights = torch.hann_window(window_len, periodic=False)
-    preds_flat = all_preds.squeeze(1).cpu()
+    stitched = np.zeros(final_len, dtype=np.float32)
+    preds_flat = all_preds.squeeze(1).cpu().numpy()
+
+    quarter = window_len // 4  # 25% ikkunasta
+
     for i in range(num_windows):
-        start = i * step_samples
-        end = start + window_len
-        stitched_sum[start:end] += preds_flat[i] * window_weights
-        stitched_weights[start:end] += window_weights
-    stitched_weights[stitched_weights == 0] = 1e-6
-    return (stitched_sum / stitched_weights).numpy()
+        start_pos = i * step_samples
+
+        if i == 0:
+            # Ensimmäinen ikkuna: otetaan alku ja keskiosa (0% -> 75%)
+            keep_end = 3 * quarter
+            stitched[0:keep_end] = preds_flat[i, 0:keep_end]
+
+        elif i == num_windows - 1:
+            # Viimeinen ikkuna: otetaan keskiosa ja loppu (25% -> 100%)
+            keep_start = quarter
+            stitched[start_pos + keep_start: start_pos + window_len] = preds_flat[i, keep_start:]
+
+        else:
+            # Keskimmäiset ikkunat: vain keskimmäinen puolikas (25% -> 75%)
+            # Tämä osa on pituudeltaan tasan step_samples, jos overlap on 50%
+            keep_start = quarter
+            keep_end = 3 * quarter
+            stitched[start_pos + keep_start: start_pos + keep_end] = preds_flat[i, keep_start:keep_end]
+
+    return stitched
 
 
 def compute_event_based_metrics(model,
@@ -283,9 +302,9 @@ def compute_event_based_metrics(model,
     del all_probs_list, all_masks_list, raw_signal_list;
     gc.collect()
 
-    prob_1d = _stitch_predictions_1d(all_probs, step_samples)
-    mask_1d = _stitch_predictions_1d(all_masks, step_samples)
-    raw_1d = _stitch_predictions_1d(all_raw, step_samples)
+    prob_1d = _stitch_predictions_1d_spindleunet(all_probs, step_samples)
+    mask_1d = _stitch_predictions_1d_spindleunet(all_masks, step_samples)
+    raw_1d = _stitch_predictions_1d_spindleunet(all_raw, step_samples)
 
     log.info(f"Finding events (Thresh: {threshold:.2f}, PowerCheck: {use_power_check})...")
 

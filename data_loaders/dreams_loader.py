@@ -5,51 +5,33 @@ from pathlib import Path
 import mne
 import numpy as np
 from typing import List, Dict, Optional, Any
-from config import DATA_PARAMS
+from configs.dreams_config import DATA_PARAMS
 
 log = logging.getLogger(__name__)
 
-TARGET_SAMPLE_RATE = DATA_PARAMS['fs']
-
 
 def find_dreams_data_files(raw_data_path: Path) -> List[Dict[str, Any]]:
-    """
-    Etsii DREAMS-datatiedostot perustuen config.py:n subjects_list-asetukseen.
-    Hoitaa automaattisesti poikkeukset potilaille 7 ja 8 (vain Scorer 1).
-    """
     subjects_to_process = DATA_PARAMS['subjects_list']
     log.info(f"Searching for data in: {raw_data_path}")
     log.info(f"Subjects to process: {subjects_to_process}")
 
-    edf_dir = raw_data_path / 'EDF'
-    txt_dir = raw_data_path / 'TXT'
-
-    # Fallback: jos kansioita ei ole, oletetaan tiedostojen olevan juuressa
-    if not edf_dir.is_dir():
-        edf_dir = raw_data_path
-    if not txt_dir.is_dir():
-        txt_dir = raw_data_path
-
     found_subjects = []
 
     for subject_id in subjects_to_process:
-        # Etsitään tiedostoja configin listan perusteella
         edf_name = f"{subject_id}.edf"
-        edf_file = edf_dir / edf_name
+        edf_file = raw_data_path / edf_name
 
         if not edf_file.exists():
             log.warning(f"EDF file not found for {subject_id}: {edf_file}")
             continue
 
         annotation_files = []
-
-        # Rakennetaan annotaatiotiedostojen nimet
-        # Oletus: Visual_scoring1_excerpt1.txt
         idx_str = ''.join(filter(str.isdigit, subject_id))  # "excerpt1" -> "1"
-        txt_file_e1 = txt_dir / f"Visual_scoring1_excerpt{idx_str}.txt"
-        txt_file_e2 = txt_dir / f"Visual_scoring2_excerpt{idx_str}.txt"
 
-        # --- LOGIIKKA 7 & 8: KÄYTÄ VAIN SCORER 1 ---
+        txt_file_e1 = raw_data_path / f"Visual_scoring1_excerpt{idx_str}.txt"
+        txt_file_e2 = raw_data_path / f"Visual_scoring2_excerpt{idx_str}.txt"
+
+        # --- Logic for 7 & 8:
         if subject_id in ['excerpt7', 'excerpt8']:
             log.info(f"Subject {subject_id}: Single scorer mode (loading only Scorer 1).")
             if txt_file_e1.exists():
@@ -57,7 +39,7 @@ def find_dreams_data_files(raw_data_path: Path) -> List[Dict[str, Any]]:
             else:
                 log.warning(f"Subject {subject_id}: Scorer 1 annotation file missing!")
 
-        # --- MUUT POTILAAT: KÄYTÄ MOLEMPIA JOS LÖYTYY ---
+        # --- Logic for 1-6:
         else:
             if txt_file_e1.exists():
                 annotation_files.append(txt_file_e1)
@@ -86,10 +68,8 @@ def find_dreams_data_files(raw_data_path: Path) -> List[Dict[str, Any]]:
 
 def _load_dreams_annotations_txt(txt_file_path: Path, sfreq: float) -> mne.Annotations:
     try:
-        # Yritetään lukea ilman otsikkoa (tai kommentilla #)
         annotations_data = np.loadtxt(txt_file_path, comments='#', skiprows=0)
     except ValueError:
-        # Jos epäonnistuu (esim. otsikkorivi), hypätään yli 1. rivi
         try:
             annotations_data = np.loadtxt(txt_file_path, comments='#', skiprows=1)
         except Exception as e:
@@ -121,21 +101,18 @@ def _load_dreams_annotations_txt(txt_file_path: Path, sfreq: float) -> mne.Annot
 
     return mne.Annotations(onset=onsets, duration=durations, description=descriptions)
 
-
 def load_dreams_patient_data(patient_file_group: Dict[str, Any], eeg_channel: str = 'C3-A1') -> Optional[mne.io.Raw]:
     patient_id = patient_file_group['id']
     log.info(f"Loading data for patient: {patient_id}...")
     try:
-        raw_signal = mne.io.read_raw_edf(patient_file_group['signal_file'], preload=True, verbose='WARNING')
+        raw_signal = mne.io.read_raw_edf(patient_file_group['signal_file'], preload=True, verbose='ERROR')
 
-        # Resample tarvittaessa
-        if raw_signal.info['sfreq'] != TARGET_SAMPLE_RATE:
-            raw_signal.resample(TARGET_SAMPLE_RATE, npad="auto")
+        if raw_signal.info['sfreq'] != DATA_PARAMS['fs']:
+            raw_signal.resample(DATA_PARAMS['fs'], npad="auto")
 
-        # Kanavan valinta
         target_channel = eeg_channel
         if target_channel not in raw_signal.ch_names:
-            # Fallback logiikka
+            # Fallback
             fallback_channels = [ch for ch in raw_signal.ch_names if 'C3' in ch.upper()]
             if not fallback_channels:
                 fallback_channels = [ch for ch in raw_signal.ch_names if 'CZ' in ch.upper()]
@@ -149,7 +126,7 @@ def load_dreams_patient_data(patient_file_group: Dict[str, Any], eeg_channel: st
 
         raw_signal.pick([target_channel])
 
-        # Yhdistä annotaatiot (Union)
+        # Ground Truth = Union
         sfreq = raw_signal.info['sfreq']
         combined_annotations = mne.Annotations([], [], [])
 

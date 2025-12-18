@@ -9,19 +9,19 @@ import random
 import numpy as np
 from datetime import datetime
 from collections import defaultdict
+import paths
 
 from utils.logger import setup_logging
-from data_preprocess.dataset import get_dataloaders
-from UNET_model.model import GatedUNet, train_model
-from UNET_model.evaluation_metrics import compute_event_based_metrics, find_optimal_threshold
-from config import (
+from core.dataset import get_dataloaders
+from core.model import GatedUNet, train_model
+from core.metrics import compute_event_based_metrics, find_optimal_threshold
+from configs.dreams_config import (
     TRAINING_PARAMS,
     DATA_PARAMS,
     TEST_FAST_FRACTION,
     CV_CONFIG,
     INFERENCE_PARAMS,
-    METRIC_PARAMS,
-    PATHS
+    METRIC_PARAMS
 )
 
 
@@ -77,7 +77,7 @@ if __name__ == "__main__":
     set_seed(1)
 
     # Ensure output directory exists
-    os.makedirs(PATHS['output_dir'], exist_ok=True)
+    os.makedirs(paths.REPORTS_DIR, exist_ok=True)
 
     setup_logging("training.log")
     log = logging.getLogger(__name__)
@@ -92,7 +92,6 @@ if __name__ == "__main__":
     log_param_dict(log, "METRIC_PARAMS", METRIC_PARAMS)
     log_param_dict(log, "CV_CONFIG", CV_CONFIG)
     log_param_dict(log, "TEST_FAST_FRACTION", TEST_FAST_FRACTION)
-    log_param_dict(log, "PATHS", PATHS)
     log.info("=" * 60)
 
     FAST_TEST_FRACTION = TEST_FAST_FRACTION['FAST_TEST_FRACTION']
@@ -109,7 +108,7 @@ if __name__ == "__main__":
     log.info(f"Starting Training. SWA={USE_SWA}, Inference Mode={INFERENCE_PARAMS['inference_mode']}")
 
     timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-    output_dir = os.path.join(PATHS['output_dir'], f"LOSO_run_{timestamp}")
+    output_dir = os.path.join(paths.REPORTS_DIR, f"LOSO_run_{timestamp}")
     os.makedirs(output_dir, exist_ok=True)
 
     all_subjects = DATA_PARAMS['subjects_list']
@@ -132,7 +131,7 @@ if __name__ == "__main__":
         # 1. Load Data
         try:
             train_loader, val_loader, test_loader = get_dataloaders(
-                processed_data_dir=PATHS['processed_data_dir'],
+                processed_data_dir=paths.PROCESSED_DATA_DIR,
                 batch_size=params['batch_size'],
                 train_subject_ids=train_subject_ids,
                 val_subject_ids=val_subject_id,

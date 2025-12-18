@@ -7,7 +7,7 @@ from torch.utils.data import Dataset, DataLoader, ConcatDataset, Subset
 import logging
 import random
 from scipy.signal import butter, filtfilt
-from config import DATA_PARAMS, METRIC_PARAMS
+from configs.dreams_config import DATA_PARAMS, METRIC_PARAMS
 from data_preprocess.normalization import normalize_data
 
 log = logging.getLogger(__name__)
