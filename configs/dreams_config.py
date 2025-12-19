@@ -32,8 +32,8 @@ TRAINING_PARAMS = {
 }
 
 CV_CONFIG = {
-    #'folds_to_run': None  # [0, 1]
-    'folds_to_run': [0,1,3]
+    'folds_to_run': None  # [0, 1]
+    #'folds_to_run': [3]
 }
 
 METRIC_PARAMS = {
@@ -49,7 +49,7 @@ TEST_FAST_FRACTION = {
 }
 
 INFERENCE_PARAMS = {
-    'fixed_threshold': 0.45,
+    'fixed_threshold': 0.55,
     'use_power_check': False,
     'inference_mode': 'ensemble',
     'use_hybrid_filter': False,
