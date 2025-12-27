@@ -4,95 +4,87 @@ This repository contains a deep learning framework designed for the robust detec
 
 The method has been developed and validated using the DREAMS Sleep Spindles Database.
 
-## System Environment
+## Methodology
 
-The code was developed and tested in the following environment:
-* **Hardware:** MacBook Pro (M4 Chip, Apple Silicon)
-* **Software:** Python 3.13.0, PyTorch
-* **Dependencies:** MNE, PyTorch, SciPy, NumPy, Pandas (see requirements).
+### 1. Data Preprocessing
+The pipeline processes raw EEG signals as follows:
+* **Bandpass Filtering:** 4th-order Butterworth filter (0.3–30 Hz).
+* **Sleep Stage Stratification:** Analysis restricted to NREM stages (N2 and N3); Wake and REM epochs excluded to minimize false positives.
+* **Instance Normalization:** Independent Z-score normalization for each 5-second window to mitigate inter-subject amplitude variability.
+
+### 2. Model Architecture
+**1D Gated U-Net** designed for time-series segmentation:
+* **Encoder-Decoder:** Symmetric structure with skip connections to preserve high-resolution temporal features.
+* **Gating Mechanism:** Sigmoid-based Attention Gates in skip connections filter irrelevant features (noise) before merging with decoder layers.
+
+### 3. Optimization Strategy
+Techniques for improved stability and generalization:
+* **Stochastic Weight Averaging (SWA):** Weights averaged over final epochs to approximate a broader, more robust local minimum.
+* **Ensemble Inference:** Final detection averages predictions from the "Best Model" (lowest validation loss) and the "SWA Model".
+
+## Project Structure
+
+```text
+├── configs/
+│   └── dreams_config.py    # Main configuration for DREAMS dataset
+├── core/
+│   ├── model.py            # Gated U-Net architecture implementation
+│   ├── dataset.py          # PyTorch Dataset and augmentation logic
+│   └── metrics.py          # Evaluation metrics and event detection logic
+├── data_loaders/           # Loaders for DREAMS/MASS datasets
+│   └── dreams_config.py 
+├── data_preprocess/        # Signal filtering and normalization tools
+│   ├── bandpassfilter.py            
+│   └── normalization.py          
+├── utils/                  # Logging and helper utilities
+│   ├── find_best_seed.py            
+│   └── logger.py  
+├── main.py                 # Main training and evaluation script
+├── data_handler.py         # Script for raw data preprocessing
+└── paths.py                # System path definitions
+```
+
+## Usage Instructions
+
+### 1. Data Setup
+The project uses `paths.py` to locate data.
+1.  Open `paths.py` and verify the `RAW_DREAMS_DATA_DIR` variable (default is `data/DREAMS`).
+2.  Place all DREAMS database files (both `.edf` and `.txt` annotations) directly into this folder.
+
+### 2. Data Preprocessing
+Before training, convert the raw EEG data into processed tensors (`.npy` format).
+```bash
+python data_handler.py
+```
+* This script performs bandpass filtering (0.3-30Hz), segmentation, and Z-score normalization.
+* Output: Processed files are saved to the data/processed directory (defined in paths.py).
+* Important: If you modify filtering parameters in dreams_config.py, you must re-run this script.
+
+### 3. Model Training
+
+Run the main training loop. This script performs the Leave-One-Subject-Out (LOSO) cross-validation.
+```bash
+python main.py
+```
+* The script automatically loads the preprocessed data.
+* It trains a model for each fold (holding one subject out for testing) using the settings in configs/dreams_config.py.
+* Logs, checkpoints, and detailed CSV error analysis reports are saved to model_reports/.
 
 ## Performance Evaluation
 
 The model's performance was evaluated using Leave-One-Subject-Out (LOSO) cross-validation on the DREAMS database. The final predictions were generated using an ensemble of the best validation model and the SWA model.
 
-**Training Configuration:**
-* **Optimizer:** Adam (`weight_decay=1e-4`)
-* **Regularization:** Dropout (0.2) + SWA
-* **Preprocessing:** 200 Hz sampling rate, 0.3–30 Hz bandpass filter
+### Model Performance by Subject (LOSO Cross-Validation)
 
-**LOSO Cross-Validation Results:**
-
-| Subject | F1-score | Precision | Recall | TP (Count) | FP (Count) | FN (Count) | mIoU (TPs) |
-| :--- | :--- | :--- | :--- |:-----------|:-----------|:-----------| :--- |
-| **Excerpt 1** | 0.8218 | 0.7958 | 0.8496 | 113        | 29         | 20         | 0.7958 |
-| **Excerpt 2** | 0.7947 | 0.7895 | 0.8000 | 60         | 16         | 15         | 0.8095 |
-| **Excerpt 3** | 0.8434 | 0.8140 | 0.8750 | 35         | 8          | 5          | 0.7735 |
-| **Excerpt 4** | 0.7308 | 0.7037 | 0.7600 | 19         | 8          | 6          | 0.7911 |
-| **Excerpt 5** | 0.7981 | 0.7757 | 0.8218 | 83         | 24         | 18         | 0.8241 |
-| **Excerpt 6** | 0.8213 | 0.8947 | 0.7589 | 85         | 10         | 27         | 0.8248 |
-| **MEAN** | **0.8017** | **0.7956** | **0.8109** | **-**      | **-**      | **-**      | **0.8031** |
-
-## Methodology
-
-### 1. Data Preprocessing Pipeline
-To ensure high-quality input for the neural network, the raw EEG signals undergo a strict preprocessing pipeline:
-* **Bandpass Filtering:** Signals are filtered between 0.3 Hz and 30 Hz using a 4th-order Butterworth filter
-* **Sleep Stage Stratification:** Training and inference are explicitly restricted to NREM sleep stages (N2 and N3). Epochs classified as Wake or REM are excluded to reduce false positives.
-* **Instance Normalization:** Each 5-second input window is normalized independently (Z-score normalization). This approach mitigates the issue of amplitude variability between different subjects.
-
-### 2. Model Architecture
-The core of the system is a 1D Gated U-Net architecture adapted for time-series segmentation.
-* **Encoder-Decoder Structure:** The network uses a symmetric U-Net design with skip connections to preserve spatial information.
-* **Gating Mechanism:** Sigmoid-based gating units are applied within the skip connections. These gates learn to filter out irrelevant features (noise) from the encoder before they are merged with the decoder features.
-
-### 3. Optimization Strategy
-The training process incorporates advanced techniques to ensure stability:
-* **Stochastic Weight Averaging (SWA):** Weights are averaged over the final training epochs to approximate a broader local minimum in the loss landscape.
-* **Ensemble Inference:** The final detection is an average of the predictions from the "Best Model" (lowest validation loss) and the "SWA Model".
-
-## Configuration
-
-This framework is configured via `config.py`. You must set up your data paths before running the code.
-
-### Path Configuration
-Open `config.py` and locate the `PATHS` dictionary. Update `raw_data_dir` to point to the folder where you downloaded the DREAMS database (.edf and .txt files).
-
-```
-PATHS = {
-    "raw_data_dir": "/absolute/path/to/your/data/raw_DREAMS",
-    "processed_data_dir": "./data/processed",
-    "output_dir": "./model_reports"
-}
-```
-
-## Usage Instructions
-
-### 1. Data Preprocessing
-
-Before training, the raw EDF and text files must be processed into tensor format. This step performs filtering, segmentation, and annotation merging based on your configuration.
-```
-python data_handler.py
-```
-* Output: Saves .npy files to processed_data_dir. 
-* Important: If you change filtering parameters (e.g. frequency bands) or the merge mode in `config.py`, you must re-run this script to generate new data
-
-### 2. Model Training
-
-Run the main training loop. This script performs Leave-One-Subject-Out (LOSO) cross-validation.
-```
-python main.py
-```
-* The script loads the preprocessed data. 
-* It trains a model for each fold (holding one subject out for testing). 
-* Logs and detailed CSV error analysis reports are saved to model_reports/.
-
-## Project Structure
-* `config.py`: Central configuration file (paths, hyperparameters). 
-* `main.py`: Primary script for training and evaluation. 
-* `data_handler.py`: Script for loading and preprocessing raw data. 
-* `UNET_model/`: Contains `model.py` (Gated U-Net) and `evaluation_metrics.py`. 
-* `data_preprocess/`: Helper modules (`handler.py`, `bandpassfilter.py`, `normalization.py`). 
-* `utils/`: Logging utilities.
+| Subject       | F1-score | Precision | Recall | TP (Count) | FP (Count) | FN (Count) | mIoU (TPs) |
+|:--------------| :--- | :--- | :--- |:-----------|:-----------|:-----------| :--- |
+| **Excerpt 1** | 0.8073 | 0.7817 | 0.8346 | 111 | 31 | 22 | - |
+| **Excerpt 2** | 0.7947 | 0.7792 | 0.8108 | 60 | 17 | 14 | - |
+| **Excerpt 3** | 0.8434 | 0.8140 | 0.8750 | 35 | 8 | 5 | - |
+| **Excerpt 4** | 0.7600 | 0.7308 | 0.7917 | 19 | 7 | 5 | - |
+| **Excerpt 5** | 0.8000 | 0.7706 | 0.8317 | 84 | 25 | 17 | - |
+| **Excerpt 6** | 0.8195 | 0.8936 | 0.7568 | 84 | 10 | 27 | - |
+| **Average**   | **0.8041** | **0.7950** | **0.8168** | **-** | **-** | **-** | **0.7873** |
 
 ## License & Citation
 This project is open-source and available under the MIT License (see the LICENSE file for details). You are free to use, modify, and distribute this software for research and development purposes.
