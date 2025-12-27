@@ -1,3 +1,5 @@
+# core/metrics.py
+
 import logging
 import torch
 import numpy as np
@@ -234,14 +236,32 @@ def _stitch_predictions_1d(all_preds: torch.Tensor, step_samples: int) -> np.nda
     final_len = (num_windows - 1) * step_samples + window_len
     stitched_sum = torch.zeros(final_len, dtype=torch.float32)
     stitched_weights = torch.zeros(final_len, dtype=torch.float32)
-    window_weights = torch.hann_window(window_len, periodic=False)
+
+    # --- MODIFICATION: CENTER CROP PREDICTION ---
+    # Instead of Hann window, we explicitly zero out the edges and keep only the center.
+    # We calculate the margin based on stride (step_samples).
+    # If stride is ~50%, this keeps the middle 50% of the window.
+    margin = (window_len - step_samples) // 2
+
+    # Create a boxcar window (0 at edges, 1 in center)
+    window_weights = torch.zeros(window_len, dtype=torch.float32)
+    if margin < window_len // 2:
+        window_weights[margin: window_len - margin] = 1.0
+    else:
+        # Fallback for unexpected shapes
+        window_weights[:] = 1.0
+
     preds_flat = all_preds.squeeze(1).cpu()
     for i in range(num_windows):
         start = i * step_samples
         end = start + window_len
         stitched_sum[start:end] += preds_flat[i] * window_weights
         stitched_weights[start:end] += window_weights
-    stitched_weights[stitched_weights == 0] = 1e-6
+
+    # Handle regions with no coverage (start/end of file) by avoiding division by zero
+    # If weight is 0, sum is 0, so result remains 0.
+    stitched_weights[stitched_weights == 0] = 1.0
+
     return (stitched_sum / stitched_weights).numpy()
 
 

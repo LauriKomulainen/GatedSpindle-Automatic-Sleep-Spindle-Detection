@@ -32,7 +32,7 @@ TRAINING_PARAMS = {
 }
 
 CV_CONFIG = {
-    'folds_to_run': None  # [0, 1]
+    'folds_to_run': None
     #'folds_to_run': [3]
 }
 
