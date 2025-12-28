@@ -12,7 +12,6 @@ from preprocessing.normalization import normalize_data
 
 log = logging.getLogger(__name__)
 
-
 def butter_bandpass_filter(data, lowcut, highcut, fs, order=4):
     nyquist = 0.5 * fs
     low = lowcut / nyquist
@@ -34,7 +33,6 @@ class RandomAugment1D:
             signal = signal + noise
         return signal
 
-
 class SpindleDataset(Dataset):
     def __init__(self, x_1d_path, y_1d_path, seq_len=1, augment=False):
         self.x_1d_path = x_1d_path
@@ -42,12 +40,10 @@ class SpindleDataset(Dataset):
         self.x_mmap = np.load(x_1d_path, mmap_mode='r')
         self.y_mmap = np.load(y_1d_path, mmap_mode='r')
         self.length = self.x_mmap.shape[0]
-        self.fs = 200.0
+        self.fs = DATA_PARAMS['fs']
         self.augment = augment
         self.augmentor = RandomAugment1D(p=0.5)
         self.use_instance_norm = DATA_PARAMS.get('use_instance_norm', True)
-
-        # Haetaan taajuusrajat configista
         self.low_f = METRIC_PARAMS['spindle_freq_low']
         self.high_f = METRIC_PARAMS['spindle_freq_high']
 
@@ -72,7 +68,7 @@ class SpindleDataset(Dataset):
         if self.augment:
             signal_tensor = self.augmentor(signal_tensor)
 
-        # --- LABEL LOADING (HARD LABELS) ---
+        # LABEL LOADING (HARD LABELS)
         mask_1d = np.array(self.y_mmap[idx], dtype=np.float32)
         mask_tensor = torch.tensor(mask_1d, dtype=torch.float32)
 

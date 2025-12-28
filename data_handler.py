@@ -5,7 +5,7 @@ from pathlib import Path
 import numpy as np
 import time
 import shutil
-import json  # Lisätty json-kirjasto tallennusta varten
+import json
 import matplotlib.pyplot as plt
 from scipy.ndimage import label
 from utils.logger import setup_logging
@@ -17,7 +17,6 @@ import paths
 setup_logging("data_handler.log")
 log = logging.getLogger(__name__)
 
-# --- POLKUJEN MÄÄRITYS ---
 DATA_DIRECTORY = paths.RAW_DREAMS_DATA_DIR
 PROCESSED_DATA_DIR = paths.PROCESSED_DATA_DIR
 CURRENT_DIR = Path(__file__).resolve().parent
@@ -41,7 +40,7 @@ def load_hypnogram(txt_dir: Path, subject_id: str):
 
     try:
         hypno_data = np.loadtxt(hypno_file, dtype=int, skiprows=1)
-    except Exception:
+    except Exception as e:
         try:
             hypno_data = np.loadtxt(hypno_file, dtype=int)
         except Exception as e:
@@ -332,7 +331,6 @@ def main():
         np.save(y_path, y_masks)
         log.info(f"Saved to {x_path}")
 
-    # TALLENNETAAN TILASTOT JSON-TIEDOSTOON
     if subject_stats:
         stats_file = PROCESSED_DATA_DIR / "subject_stats.json"
         with open(stats_file, 'w') as f:

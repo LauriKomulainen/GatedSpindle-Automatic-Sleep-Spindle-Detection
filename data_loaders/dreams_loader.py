@@ -9,7 +9,6 @@ from configs.dreams_config import DATA_PARAMS
 
 log = logging.getLogger(__name__)
 
-
 def find_dreams_data_files(raw_data_path: Path) -> List[Dict[str, Any]]:
     subjects_to_process = DATA_PARAMS['subjects_list']
     log.info(f"Searching for data in: {raw_data_path}")
@@ -26,12 +25,12 @@ def find_dreams_data_files(raw_data_path: Path) -> List[Dict[str, Any]]:
             continue
 
         annotation_files = []
-        idx_str = ''.join(filter(str.isdigit, subject_id))  # "excerpt1" -> "1"
+        idx_str = ''.join(filter(str.isdigit, subject_id))
 
         txt_file_e1 = raw_data_path / f"Visual_scoring1_excerpt{idx_str}.txt"
         txt_file_e2 = raw_data_path / f"Visual_scoring2_excerpt{idx_str}.txt"
 
-        # --- Logic for 7 & 8:
+        # Logic for 7 & 8:
         if subject_id in ['excerpt7', 'excerpt8']:
             log.info(f"Subject {subject_id}: Single scorer mode (loading only Scorer 1).")
             if txt_file_e1.exists():
@@ -39,7 +38,7 @@ def find_dreams_data_files(raw_data_path: Path) -> List[Dict[str, Any]]:
             else:
                 log.warning(f"Subject {subject_id}: Scorer 1 annotation file missing!")
 
-        # --- Logic for 1-6:
+        # Logic for 1-6:
         else:
             if txt_file_e1.exists():
                 annotation_files.append(txt_file_e1)
@@ -65,7 +64,6 @@ def find_dreams_data_files(raw_data_path: Path) -> List[Dict[str, Any]]:
     log.info(f"Found a total of {len(found_subjects)} processable DREAMS subjects.")
     return found_subjects
 
-
 def _load_dreams_annotations_txt(txt_file_path: Path, sfreq: float) -> mne.Annotations:
     try:
         annotations_data = np.loadtxt(txt_file_path, comments='#', skiprows=0)
@@ -82,7 +80,6 @@ def _load_dreams_annotations_txt(txt_file_path: Path, sfreq: float) -> mne.Annot
     if annotations_data.ndim == 1:
         annotations_data = annotations_data.reshape(1, -1)
 
-    # DREAMS format: Start(sec) Duration(sec)
     if annotations_data.shape[1] < 2:
         return mne.Annotations([], [], [])
 
@@ -112,7 +109,6 @@ def load_dreams_patient_data(patient_file_group: Dict[str, Any], eeg_channel: st
 
         target_channel = eeg_channel
         if target_channel not in raw_signal.ch_names:
-            # Fallback
             fallback_channels = [ch for ch in raw_signal.ch_names if 'C3' in ch.upper()]
             if not fallback_channels:
                 fallback_channels = [ch for ch in raw_signal.ch_names if 'CZ' in ch.upper()]

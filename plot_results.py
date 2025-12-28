@@ -11,7 +11,7 @@ import paths
 setup_logging("plot_results.log")
 log = logging.getLogger(__name__)
 
-LOSO_FOLDER_NAME = "LOSO_run_2025-12-28_12-50-56"
+LOSO_FOLDER_NAME = "LOSO_run_2025-12-28_15-10-28"
 MODEL_RUN_DIR = paths.REPORTS_DIR / LOSO_FOLDER_NAME
 CURRENT_DIR = Path(__file__).resolve().parent
 PROCESSED_DATA_DIR = paths.PROCESSED_DATA_DIR
@@ -147,7 +147,7 @@ def plot_annotation_stats(data, save_dir):
     ax.bar(x + 0.5 * width, data['kept'], width, label='N2/N3 (Filtered)', color=c_filt)
 
     ax.set_ylabel('Spindle Count')
-    ax.set_title('Annotation Analysis (Experts vs. Consensus)')
+    ax.set_title('Annotation Analysis (Experts & Consensus)')
     ax.set_xticks(x)
     ax.set_xticklabels(data['labels'])
 
@@ -207,7 +207,7 @@ def plot_model_performance(data, save_dir):
     rects_fp = ax.bar(x + width, data['fp'], width, label='Model Fp', color=c_fp)
 
     ax.set_ylabel('Spindle Count')
-    ax.set_title('Model Performance (Ground Truth vs. Predictions breakdown)')
+    ax.set_title('Model Performance (Ground Truth & Model Predictions)')
     ax.set_xticks(x)
     ax.set_xticklabels(data['labels'])
     ax.set_xlabel('Subject Number')

@@ -119,13 +119,11 @@ def train_model(model, train_loader, val_loader, optimizer_type, learning_rate, 
     if torch.backends.mps.is_available(): device = torch.device('mps')
 
     model.to(device)
-    # Haetaan parametrit configista (fallback oletusarvoihin jos puuttuu)
     weight_decay = TRAINING_PARAMS.get('weight_decay', 1e-2)
 
-    # --- OPTIMIZER SELECTION ---
+    # OPTIMIZER SELECTION
     if optimizer_type == 'Adam':
         optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate, weight_decay=weight_decay)
-
     elif optimizer_type == 'AdamW':
         optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate, weight_decay=weight_decay)
 
@@ -153,7 +151,6 @@ def train_model(model, train_loader, val_loader, optimizer_type, learning_rate, 
     train_losses, val_losses = [], []
 
     for epoch in range(num_epochs):
-        # --- TURVAKYTKIN: Lopetetaan, jos uusi takaraja on saavutettu ---
         if epoch >= actual_stop_epoch:
             log.info(f"Reached adjusted training limit ({actual_stop_epoch} epochs). Stopping.")
             break
@@ -183,7 +180,7 @@ def train_model(model, train_loader, val_loader, optimizer_type, learning_rate, 
         avg_train = ep_loss / len(train_loader)
         train_losses.append(avg_train)
 
-        # --- SWA Update Logic ---
+        # SWA Update Logic
         if use_swa and epoch >= swa_start_epoch:
             swa_model.update_parameters(model)
             swa_scheduler.step()
@@ -204,13 +201,10 @@ def train_model(model, train_loader, val_loader, optimizer_type, learning_rate, 
         avg_val = val_loss / len(val_loader)
         val_losses.append(avg_val)
 
-        # --- Checkpoints & Logging Logic (UPDATED) ---
         status_msg = ""
 
-        # Tallennetaan aina paras malli, vaikka oltaisiin SWA-vaiheessa (harvinaista mutta mahdollista)
         if avg_val < best_val_loss:
             best_val_loss = avg_val
-            # Nollataan patience vain jos EI olla vielä SWA-vaiheessa
             if not (use_swa and epoch >= swa_start_epoch):
                 patience_counter = 0
 
@@ -221,24 +215,19 @@ def train_model(model, train_loader, val_loader, optimizer_type, learning_rate, 
                 patience_counter += 1
             best_tag = ""
 
-        # Määritetään lokiviesti tilanteen mukaan
         if use_swa and epoch >= swa_start_epoch:
-            # Olemme SWA-vaiheessa -> Tulostetaan SWA-edistyminen
             swa_progress = epoch - swa_start_epoch + 1
             swa_total = actual_stop_epoch - swa_start_epoch
             status_msg = f"{best_tag}(SWA Phase: {swa_progress}/{swa_total})"
         else:
-            # Olemme normaalissa vaiheessa -> Tulostetaan Patience
             status_msg = f"{best_tag}(Patience: {patience_counter}/{early_stopping_patience})"
 
         log.info(f"Epoch {epoch + 1}: Train {avg_train:.4f} | Val {avg_val:.4f} | LR: {lr_now:.6f} | {status_msg}")
 
-        # 1. Jos SWA on POIS päältä -> normaali stoppi
         if not use_swa and patience_counter >= early_stopping_patience:
             log.info(f"Early stopping triggered at epoch {epoch + 1}")
             break
 
-        # 2. Jos SWA on PÄÄLLÄ, mutta patience loppuu ENNEN kuin SWA on alkanut:
         if use_swa and epoch < swa_start_epoch and patience_counter >= early_stopping_patience:
             log.info(f"Early stopping triggered (Epoch {epoch + 1}). Forcing SWA start NOW.")
 

@@ -7,7 +7,6 @@ from typing import List, Tuple
 from configs.dreams_config import METRIC_PARAMS, POST_PROCESSING_PARAMS
 
 def merge_close_events(events: List[Tuple[int, int]], fs: float, gap_thresh_sec) -> List[Tuple[int, int]]:
-    """Yhdistää tapahtumat, jotka ovat hyvin lähellä toisiaan."""
     if not events: return []
     gap_samples = int(gap_thresh_sec * fs)
     merged = []
