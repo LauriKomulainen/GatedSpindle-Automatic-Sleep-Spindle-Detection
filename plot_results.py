@@ -11,7 +11,7 @@ import paths
 setup_logging("plot_results.log")
 log = logging.getLogger(__name__)
 
-LOSO_FOLDER_NAME = "LOSO_run_2025-12-28_15-10-28"
+LOSO_FOLDER_NAME = "train_newest"
 MODEL_RUN_DIR = paths.REPORTS_DIR / LOSO_FOLDER_NAME
 CURRENT_DIR = Path(__file__).resolve().parent
 PROCESSED_DATA_DIR = paths.PROCESSED_DATA_DIR

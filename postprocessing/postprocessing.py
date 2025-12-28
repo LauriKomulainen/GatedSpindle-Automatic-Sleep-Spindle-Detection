@@ -2,7 +2,6 @@
 
 import torch
 import numpy as np
-from scipy.ndimage import label, find_objects
 from typing import List, Tuple
 from configs.dreams_config import METRIC_PARAMS, POST_PROCESSING_PARAMS
 
@@ -21,33 +20,29 @@ def merge_close_events(events: List[Tuple[int, int]], fs: float, gap_thresh_sec)
     merged.append((curr_start, curr_end))
     return merged
 
-def find_events_dual_thresh(prob_1d: np.ndarray, peak_thresh: float, border_thresh: float, fs: float) -> List[Tuple[int, int]]:
+
+def find_events_dual_thresh(prob_1d: np.ndarray, peak_thresh: float, border_thresh: float, fs: float) -> List[
+    Tuple[int, int]]:
     min_samples = METRIC_PARAMS['min_duration_sec'] * fs
     max_samples = METRIC_PARAMS['max_duration_sec'] * fs
-
-    # 1. Find regions > border_thresh
-    border_mask = prob_1d > border_thresh
-    labeled_borders, num_border_regions = label(border_mask)
-    if num_border_regions == 0: return []
-
-    # 2. Filter regions that don't contain a peak > peak_thresh
-    peak_mask = prob_1d > peak_thresh
-    labels_with_peaks = np.unique(labeled_borders[peak_mask])
-    labels_with_peaks = labels_with_peaks[labels_with_peaks > 0]
-
-    valid_slices = find_objects(labeled_borders)
-    raw_events = []
-    for label_idx in labels_with_peaks:
-        s = valid_slices[label_idx - 1]
-        raw_events.append((s[0].start, s[0].stop - 1))
-
-    raw_events.sort(key=lambda x: x[0])
     gap_thresh_sec = POST_PROCESSING_PARAMS['gap_thresh_sec']
-    
-    # 3. Merge close events
+
+    candidates = (prob_1d > border_thresh).astype(int)
+    diff = np.diff(candidates, prepend=0)
+    starts = np.where(diff == 1)[0]
+    ends = np.where(diff == -1)[0]
+
+    raw_events = []
+    for start, end in zip(starts, ends):
+        segment_probs = prob_1d[start:end]
+        if np.max(segment_probs) >= peak_thresh:
+            raw_events.append((start, end))
+
+    if not raw_events:
+        return []
+
     merged_events = merge_close_events(raw_events, fs, gap_thresh_sec)
 
-    # 4. Filter by duration
     final_events = []
     for start, end in merged_events:
         duration = end - start

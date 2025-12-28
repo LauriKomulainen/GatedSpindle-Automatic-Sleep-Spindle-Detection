@@ -6,6 +6,7 @@ import torch
 import torch.nn as nn
 import logging
 import random
+import argparse
 import numpy as np
 from datetime import datetime
 from collections import defaultdict
@@ -22,6 +23,7 @@ from configs.dreams_config import (
     INFERENCE_PARAMS,
     METRIC_PARAMS
 )
+
 
 def set_seed(seed=1):
     random.seed(seed)
@@ -72,16 +74,43 @@ def log_param_dict(logger, name, d):
 
 
 if __name__ == "__main__":
+    # PARSE ARGUMENTS
+    parser = argparse.ArgumentParser(description="Sleep Spindle Detection Pipeline")
+    parser.add_argument('--mode', type=str, default='train', choices=['train', 'evaluate'],
+                        help="Mode: 'train' starts new training, 'evaluate' tests existing models.")
+    parser.add_argument('--run_dir', type=str, default=None,
+                        help="Path to the existing run directory (required if mode='evaluate'). E.g., 'reports/LOSO_run_2023...'")
+
+    args = parser.parse_args()
+
     set_seed(1)
 
-    # Ensure output directory exists
+    # Ensure output directory exists base
     os.makedirs(paths.REPORTS_DIR, exist_ok=True)
 
-    setup_logging("training.log")
+    # SETUP OUTPUT DIRECTORY
+    if args.mode == 'train':
+        timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+        output_dir = os.path.join(paths.REPORTS_DIR, f"LOSO_run_{timestamp}")
+        os.makedirs(output_dir, exist_ok=True)
+        log_file = "training.log"
+    else:
+        # Evaluation mode
+        if args.run_dir is None:
+            raise ValueError("In 'evaluate' mode, you MUST provide --run_dir (path to previous results).")
+        if not os.path.exists(args.run_dir):
+            raise FileNotFoundError(f"Run directory not found: {args.run_dir}")
+        output_dir = args.run_dir
+        log_file = "evaluation_rerun.log"
+
+    setup_logging(log_file)
     log = logging.getLogger(__name__)
 
     # --- 1. LOG CONFIGURATION ---
-    log.info("EXPERIMENT CONFIGURATION")
+    log.info(f"EXPERIMENT CONFIGURATION (Mode: {args.mode.upper()})")
+    if args.mode == 'evaluate':
+        log.info(f"Loading models from: {output_dir}")
+
     log_param_dict(log, "TRAINING_PARAMS", TRAINING_PARAMS)
     log_param_dict(log, "DATA_PARAMS", DATA_PARAMS)
     log_param_dict(log, "INFERENCE_PARAMS", INFERENCE_PARAMS)
@@ -89,14 +118,7 @@ if __name__ == "__main__":
     log_param_dict(log, "CV_CONFIG", CV_CONFIG)
 
     params = TRAINING_PARAMS
-
-    # Check SWA config
     USE_SWA = params.get('use_swa', False)
-    log.info(f"Starting Training. SWA={USE_SWA}, Inference Mode={INFERENCE_PARAMS['inference_mode']}")
-
-    timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-    output_dir = os.path.join(paths.REPORTS_DIR, f"LOSO_run_{timestamp}")
-    os.makedirs(output_dir, exist_ok=True)
 
     all_subjects = DATA_PARAMS['subjects_list']
     all_metrics = defaultdict(list)
@@ -113,10 +135,16 @@ if __name__ == "__main__":
         log.info(f"\n{'=' * 20} STARTING FOLD: {fold_name} {'=' * 20}")
 
         fold_output_dir = os.path.join(output_dir, fold_name)
-        os.makedirs(fold_output_dir, exist_ok=True)
+
+        if args.mode == 'train':
+            os.makedirs(fold_output_dir, exist_ok=True)
+        elif not os.path.exists(fold_output_dir):
+            log.warning(f"Directory {fold_output_dir} not found! Skipping this fold.")
+            continue
 
         # 1. Load Data
         try:
+            # Note: We load data even in eval mode to get the test_loader
             train_loader, val_loader, test_loader = get_dataloaders(
                 processed_data_dir=paths.PROCESSED_DATA_DIR,
                 batch_size=params['batch_size'],
@@ -128,21 +156,24 @@ if __name__ == "__main__":
             log.error(f"Data loading failed: {e}")
             continue
 
-        model = GatedUNet(dropout_rate=params['dropout_rate'])
-
-        # 2. Train
-        train_losses, val_losses = train_model(
-            model=model,
-            train_loader=train_loader,
-            val_loader=val_loader,
-            optimizer_type=params['optimizer_type'],
-            learning_rate=params['learning_rate'],
-            num_epochs=params['num_epochs'],
-            early_stopping_patience=params['early_stopping_patience'],
-            output_dir=fold_output_dir,
-            fs=DATA_PARAMS['fs'],
-            use_swa=USE_SWA
-        )
+        # 2. Train (ONLY IF MODE IS TRAIN)
+        if args.mode == 'train':
+            model = GatedUNet(dropout_rate=params['dropout_rate'])
+            train_losses, val_losses = train_model(
+                model=model,
+                train_loader=train_loader,
+                val_loader=val_loader,
+                optimizer_type=params['optimizer_type'],
+                learning_rate=params['learning_rate'],
+                num_epochs=params['num_epochs'],
+                early_stopping_patience=params['early_stopping_patience'],
+                output_dir=fold_output_dir,
+                fs=DATA_PARAMS['fs'],
+                use_swa=USE_SWA
+            )
+            # Cleanup training model to save memory before eval
+            del model
+            torch.cuda.empty_cache()
 
         # 3. Evaluation - COMPARE METHODS
         device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -150,10 +181,12 @@ if __name__ == "__main__":
         # Load Best Model
         model_best = GatedUNet(dropout_rate=0.0).to(device)
         best_path = os.path.join(fold_output_dir, 'unet_model_best.pth')
+
         if os.path.exists(best_path):
+            log.info(f"Loading model from {best_path}")
             model_best.load_state_dict(torch.load(best_path, map_location=device))
         else:
-            log.error("Best model not found!")
+            log.error(f"Best model not found at {best_path}!")
             continue
 
         # Load SWA Model
@@ -164,9 +197,11 @@ if __name__ == "__main__":
                 model_swa = GatedUNet(dropout_rate=0.0).to(device)
                 model_swa.load_state_dict(torch.load(swa_path, map_location=device))
             else:
-                log.warning("SWA model wanted but not found.")
+                if args.mode == 'evaluate':
+                    log.info("SWA model not found, skipping SWA evaluation.")
+                else:
+                    log.warning("SWA model wanted but not found.")
 
-        # Determine Threshold (using Best model usually)
         if INFERENCE_PARAMS['fixed_threshold'] is not None:
             optimal_thresh = INFERENCE_PARAMS['fixed_threshold']
             log.info(f"Using FIXED threshold: {optimal_thresh}")
@@ -215,7 +250,7 @@ if __name__ == "__main__":
         for key, value in final_metrics.items():
             all_metrics[key].append(value)
 
-        del model, model_best, model_swa
+        del model_best, model_swa
         torch.cuda.empty_cache()
         gc.collect()
 
@@ -229,4 +264,7 @@ if __name__ == "__main__":
             std = np.std(values)
             log.info(f"{key:<15} {mean:.4f}     (± {std:.4f})")
 
-    log.info(f"All results saved to directory: {output_dir}")
+    if args.mode == 'train':
+        log.info(f"All results saved to directory: {output_dir}")
+    else:
+        log.info("Evaluation complete.")

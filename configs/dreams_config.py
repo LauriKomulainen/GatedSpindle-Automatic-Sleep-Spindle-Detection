@@ -45,11 +45,11 @@ METRIC_PARAMS = {
 }
 
 INFERENCE_PARAMS = {
-    'fixed_threshold': 0.55,
+    'fixed_threshold': 0.6,
     'inference_mode': 'ensemble', # Options: none (best), swa, ensemble
 }
 
 POST_PROCESSING_PARAMS = {
     'gap_thresh_sec': 0.3,
-    'fixed_border_thresh': 0.5,
+    'fixed_border_thresh': 0.15,
 }
