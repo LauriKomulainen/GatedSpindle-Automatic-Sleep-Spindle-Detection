@@ -14,16 +14,14 @@ import paths
 from utils.logger import setup_logging
 from core.dataset import get_dataloaders
 from core.model import GatedUNet, train_model
-from core.metrics import compute_event_based_metrics, find_optimal_threshold
+from core.evaluation import compute_event_based_metrics, find_optimal_threshold
 from configs.dreams_config import (
     TRAINING_PARAMS,
     DATA_PARAMS,
-    TEST_FAST_FRACTION,
     CV_CONFIG,
     INFERENCE_PARAMS,
     METRIC_PARAMS
 )
-
 
 def set_seed(seed=1):
     random.seed(seed)
@@ -83,28 +81,17 @@ if __name__ == "__main__":
     log = logging.getLogger(__name__)
 
     # --- 1. LOG CONFIGURATION ---
-    log.info("=" * 60)
     log.info("EXPERIMENT CONFIGURATION")
-    log.info("=" * 60)
     log_param_dict(log, "TRAINING_PARAMS", TRAINING_PARAMS)
     log_param_dict(log, "DATA_PARAMS", DATA_PARAMS)
     log_param_dict(log, "INFERENCE_PARAMS", INFERENCE_PARAMS)
     log_param_dict(log, "METRIC_PARAMS", METRIC_PARAMS)
     log_param_dict(log, "CV_CONFIG", CV_CONFIG)
-    log_param_dict(log, "TEST_FAST_FRACTION", TEST_FAST_FRACTION)
-    log.info("=" * 60)
 
-    FAST_TEST_FRACTION = TEST_FAST_FRACTION['FAST_TEST_FRACTION']
     params = TRAINING_PARAMS
 
     # Check SWA config
     USE_SWA = params.get('use_swa', False)
-
-    if FAST_TEST_FRACTION < 1.0:
-        log.warning(f"RUNNING IN FAST TEST MODE (DATA FRACTION: {FAST_TEST_FRACTION})")
-        params['num_epochs'] = 2
-        params['early_stopping_patience'] = 1
-
     log.info(f"Starting Training. SWA={USE_SWA}, Inference Mode={INFERENCE_PARAMS['inference_mode']}")
 
     timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
@@ -136,7 +123,6 @@ if __name__ == "__main__":
                 train_subject_ids=train_subject_ids,
                 val_subject_ids=val_subject_id,
                 test_subject_ids=test_subject_id,
-                use_fraction=FAST_TEST_FRACTION
             )
         except Exception as e:
             log.error(f"Data loading failed: {e}")
@@ -195,7 +181,7 @@ if __name__ == "__main__":
 
         # A. Evaluate BEST
         metrics_best = compute_event_based_metrics(model_best, test_loader, optimal_thresh, test_subject_id[0],
-                                                   fold_output_dir, INFERENCE_PARAMS['use_power_check'])
+                                                   fold_output_dir)
         log_metrics(log, "BEST", metrics_best)
 
         metrics_swa = None
@@ -204,13 +190,13 @@ if __name__ == "__main__":
         # B. Evaluate SWA
         if model_swa:
             metrics_swa = compute_event_based_metrics(model_swa, test_loader, optimal_thresh, test_subject_id[0],
-                                                      fold_output_dir, INFERENCE_PARAMS['use_power_check'])
+                                                      fold_output_dir)
             log_metrics(log, "SWA", metrics_swa)
 
             # C. Evaluate ENSEMBLE
             ensemble_model = EnsembleWrapper(model_best, model_swa).to(device)
             metrics_ens = compute_event_based_metrics(ensemble_model, test_loader, optimal_thresh, test_subject_id[0],
-                                                      fold_output_dir, INFERENCE_PARAMS['use_power_check'])
+                                                      fold_output_dir)
             log_metrics(log, "ENS", metrics_ens)
 
         log.info("-" * 60)

@@ -6,6 +6,7 @@ Raw MASS-SS2
 logs
 repository_for_original_impl
 data
+plots
 
 #Byte-compiled / optimized / DLL files
 __pycache__/

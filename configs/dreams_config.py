@@ -33,7 +33,7 @@ TRAINING_PARAMS = {
 
 CV_CONFIG = {
     'folds_to_run': None
-    #'folds_to_run': [3]
+    #'folds_to_run': [2,3]
 }
 
 METRIC_PARAMS = {
@@ -44,15 +44,12 @@ METRIC_PARAMS = {
     'max_duration_sec': 3.0
 }
 
-TEST_FAST_FRACTION = {
-    'FAST_TEST_FRACTION': 1.0
-}
-
 INFERENCE_PARAMS = {
     'fixed_threshold': 0.55,
-    'use_power_check': False,
-    'inference_mode': 'ensemble',
-    'use_hybrid_filter': False,
-    'hybrid_high_conf': 0.85,
-    'hybrid_min_power': 0.03
+    'inference_mode': 'ensemble', # Options: none (best), swa, ensemble
+}
+
+POST_PROCESSING_PARAMS = {
+    'gap_thresh_sec': 0.3,
+    'fixed_border_thresh': 0.5,
 }

@@ -8,7 +8,7 @@ import logging
 import random
 from scipy.signal import butter, filtfilt
 from configs.dreams_config import DATA_PARAMS, METRIC_PARAMS
-from data_preprocess.normalization import normalize_data
+from preprocessing.normalization import normalize_data
 
 log = logging.getLogger(__name__)
 
@@ -20,7 +20,6 @@ def butter_bandpass_filter(data, lowcut, highcut, fs, order=4):
     b, a = butter(order, [low, high], btype='band')
     y = filtfilt(b, a, data)
     return y
-
 
 class RandomAugment1D:
     def __init__(self, p=0.5):

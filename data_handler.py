@@ -5,17 +5,23 @@ from pathlib import Path
 import numpy as np
 import time
 import shutil
+import json  # Lisätty json-kirjasto tallennusta varten
+import matplotlib.pyplot as plt
 from scipy.ndimage import label
 from utils.logger import setup_logging
 from configs.dreams_config import DATA_PARAMS
-from data_preprocess import bandpassfilter, normalization
+from preprocessing import bandpassfilter, normalization
 from data_loaders import dreams_loader
 import paths
 
 setup_logging("data_handler.log")
 log = logging.getLogger(__name__)
+
+# --- POLKUJEN MÄÄRITYS ---
 DATA_DIRECTORY = paths.RAW_DREAMS_DATA_DIR
 PROCESSED_DATA_DIR = paths.PROCESSED_DATA_DIR
+CURRENT_DIR = Path(__file__).resolve().parent
+PLOTS_DIR = CURRENT_DIR / "plots"
 
 LOWCUT = DATA_PARAMS['lowcut']
 HIGHCUT = DATA_PARAMS['highcut']
@@ -48,11 +54,91 @@ def load_hypnogram(txt_dir: Path, subject_id: str):
     return hypno_data
 
 
+def get_scorer_annotations(annotation_files, sfreq):
+    scorer1_evs = []
+    scorer2_evs = []
+
+    for ann_file in annotation_files:
+        mne_ann = dreams_loader._load_dreams_annotations_txt(ann_file, sfreq)
+        filename = str(ann_file.name).lower()
+
+        events = []
+        if mne_ann:
+            for onset, duration in zip(mne_ann.onset, mne_ann.duration):
+                events.append((onset, duration))
+
+        if "scoring1" in filename:
+            scorer1_evs.extend(events)
+        elif "scoring2" in filename:
+            scorer2_evs.extend(events)
+
+    return scorer1_evs, scorer2_evs
+
+
+def plot_eeg_trace(signal, sfreq, s1_evs, s2_evs, subject_id, save_dir):
+    """
+    Piirtää 5 sekunnin pätkän (Trace), tämä jätetään data_handleriin,
+    koska se vaatii signaalidatan.
+    """
+    center_time = None
+    if len(s1_evs) > 0:
+        center_time = s1_evs[0][0] + (s1_evs[0][1] / 2)
+    elif len(s2_evs) > 0:
+        center_time = s2_evs[0][0] + (s2_evs[0][1] / 2)
+    else:
+        center_time = 10.0
+
+    win_len = 5.0
+    start_time = max(0, center_time - (win_len / 2))
+    end_time = start_time + win_len
+
+    start_idx = int(start_time * sfreq)
+    end_idx = int(end_time * sfreq)
+
+    if end_idx > len(signal):
+        end_idx = len(signal)
+        start_idx = end_idx - int(win_len * sfreq)
+
+    t_axis = np.linspace(start_time, end_time, end_idx - start_idx)
+    segment = signal[start_idx:end_idx]
+
+    plt.figure(figsize=(10, 4))
+    plt.plot(t_axis, segment, color='black', linewidth=0.8, label='EEG')
+
+    label_added = False
+    for onset, dur in s1_evs:
+        if (onset + dur) > start_time and onset < end_time:
+            vis_start = max(onset, start_time)
+            vis_end = min(onset + dur, end_time)
+            plt.hlines(y=-10, xmin=vis_start, xmax=vis_end, linewidth=4, color='#EFB7B2',
+                       label='Expert 1' if not label_added else "")
+            plt.axvspan(vis_start, vis_end, color='#EFB7B2', alpha=0.2)
+            label_added = True
+
+    label_added = False
+    for onset, dur in s2_evs:
+        if (onset + dur) > start_time and onset < end_time:
+            vis_start = max(onset, start_time)
+            vis_end = min(onset + dur, end_time)
+            plt.hlines(y=-15, xmin=vis_start, xmax=vis_end, linewidth=4, color='#6699CC',
+                       label='Expert 2' if not label_added else "")
+            label_added = True
+
+    plt.title(f"Subject {subject_id} - 5s Trace Example")
+    plt.xlabel("Time (s)")
+    plt.ylabel("Amplitude")
+    plt.legend(loc='upper right')
+    plt.tight_layout()
+
+    out_file = save_dir / f"{subject_id}_trace.png"
+    plt.savefig(out_file)
+    plt.close()
+
+
 def segment_data_with_filtering(raw, hypnogram, window_sec, overlap_sec):
     fs = raw.info['sfreq']
     signal = raw.get_data()[0]
 
-    # 1. Luo maski annotaatioista (Ground Truth)
     vote_mask = np.zeros_like(signal, dtype=np.float32)
     for annot in raw.annotations:
         if 'spindle' in annot['description']:
@@ -62,11 +148,9 @@ def segment_data_with_filtering(raw, hypnogram, window_sec, overlap_sec):
             if start_sample < end_sample:
                 vote_mask[start_sample:end_sample] = 1.0
 
-    # A. Laske kaikki spindlet (ilman stage-rajoitusta)
     _, n_total = label(vote_mask)
     n_kept = 0
 
-    # B. Laske spindlet, jotka osuvat valittuihin unitiloihin
     if hypnogram is not None:
         valid_stage_mask = np.zeros_like(vote_mask)
         samples_per_epoch = int(HYPNO_RES * fs)
@@ -83,10 +167,12 @@ def segment_data_with_filtering(raw, hypnogram, window_sec, overlap_sec):
         filtered_mask = vote_mask * valid_stage_mask
         _, n_kept = label(filtered_mask)
 
+        log.info(f"SPINDLE STATS (UNION): Total spindles found in raw data: {n_total}")
         log.info(f"SPINDLE STATS: Found {n_kept}/{n_total} spindles within included stages {INCLUDED_STAGES}.")
     else:
         n_kept = n_total
-        log.info(f"SPINDLE STATS: No hypnogram used. Found {n_total} spindles total.")
+        log.info(f"SPINDLE STATS (UNION): Total spindles found in raw data: {n_total}")
+        log.info(f"SPINDLE STATS: No hypnogram used. Keeping all {n_total} spindles.")
 
     window_samples = int(window_sec * fs)
     overlap_samples = int(overlap_sec * fs)
@@ -123,7 +209,8 @@ def segment_data_with_filtering(raw, hypnogram, window_sec, overlap_sec):
         all_masks.append(mask_window)
 
     log.info(f"Hypnogram filtering: Kept {kept_count} windows, Discarded {discarded_count} (Wrong Stages).")
-    return np.array(all_windows), np.array(all_masks)
+
+    return np.array(all_windows), np.array(all_masks), n_total, n_kept
 
 
 def main():
@@ -136,13 +223,18 @@ def main():
     if PROCESSED_DATA_DIR.exists():
         log.warning(f"Cleaning previous data from: {PROCESSED_DATA_DIR}")
         shutil.rmtree(PROCESSED_DATA_DIR)
+
     PROCESSED_DATA_DIR.mkdir(parents=True, exist_ok=True)
+    PLOTS_DIR.mkdir(parents=True, exist_ok=True)
+    log.info(f"Plots will be saved to: {PLOTS_DIR}")
 
     patient_list = dreams_loader.find_dreams_data_files(DATA_DIRECTORY)
 
     if not patient_list:
         log.error(f"No valid data files found in {DATA_DIRECTORY}. Please check paths.py file.")
         return
+
+    subject_stats = []
 
     for patient_file_group in patient_list:
         patient_id = patient_file_group['id']
@@ -154,24 +246,35 @@ def main():
 
         fs = raw.info['sfreq']
 
-        hypnogram = load_hypnogram(DATA_DIRECTORY, patient_id)
-
-        if hypnogram is None:
-            log.warning(f"Skipping filtering for {patient_id} (No hypnogram found in {DATA_DIRECTORY}).")
+        s1_events, s2_events = get_scorer_annotations(patient_file_group['annotation_files'], fs)
 
         signal_data = raw.get_data()[0]
         filtered_signal = bandpassfilter.apply_bandpass_filter(
             signal_data, fs, LOWCUT, HIGHCUT, FILTER_ORDER
         )
 
+        plot_eeg_trace(filtered_signal, fs, s1_events, s2_events, patient_id, PLOTS_DIR)
+
         if not USE_INSTANCE_NORM:
             filtered_signal = normalization.normalize_data(filtered_signal)
 
         raw._data[0] = filtered_signal
 
-        x_windows, y_masks = segment_data_with_filtering(
+        hypnogram = load_hypnogram(DATA_DIRECTORY, patient_id)
+        if hypnogram is None:
+            log.warning(f"Skipping filtering for {patient_id} (No hypnogram found).")
+
+        x_windows, y_masks, n_union, n_kept = segment_data_with_filtering(
             raw, hypnogram, window_sec=WINDOW_SEC, overlap_sec=OVERLAP_SEC
         )
+
+        subject_stats.append({
+            'id': patient_id,
+            's1': len(s1_events),
+            's2': len(s2_events),
+            'union': n_union,
+            'kept': n_kept
+        })
 
         if len(x_windows) == 0:
             log.warning(f"No windows for {patient_id}. Check hypnogram/stages.")
@@ -186,8 +289,16 @@ def main():
         np.save(y_path, y_masks)
         log.info(f"Saved to {x_path}")
 
+    # TALLENNETAAN TILASTOT JSON-TIEDOSTOON
+    if subject_stats:
+        stats_file = PROCESSED_DATA_DIR / "subject_stats.json"
+        with open(stats_file, 'w') as f:
+            json.dump(subject_stats, f, indent=4)
+        log.info(f"Subject statistics saved to {stats_file}")
+
     end_time = time.time()
     log.info(f"\nPreprocessing complete. Total time: {end_time - start_time:.2f} s")
+
 
 if __name__ == "__main__":
     main()

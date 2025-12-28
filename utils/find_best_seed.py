@@ -9,7 +9,7 @@ import os
 from utils.logger import setup_logging
 from core.dataset import get_dataloaders
 from core.model import GatedUNet, train_model
-from core.metrics import compute_event_based_metrics, find_optimal_threshold
+from core.evaluation import compute_event_based_metrics, find_optimal_threshold
 from configs.dreams_config import TRAINING_PARAMS, DATA_PARAMS, TEST_FAST_FRACTION
 
 SEEDS_TO_TRY = [0, 1, 123, 2024, 3407]
