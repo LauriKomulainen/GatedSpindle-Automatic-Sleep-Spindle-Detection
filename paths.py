@@ -16,6 +16,8 @@ PROCESSED_DATA_DIR = ROOT_DIR / "data" / "processed"
 # Ouput directory for training reports
 REPORTS_DIR = ROOT_DIR / "model_reports"
 
+# Ouput directory for plots
+PLOTS_DIR = ROOT_DIR / "plots"
 
 PROCESSED_DATA_DIR.mkdir(parents=True, exist_ok=True)
 REPORTS_DIR.mkdir(parents=True, exist_ok=True)
