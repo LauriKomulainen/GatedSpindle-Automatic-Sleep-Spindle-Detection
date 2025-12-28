@@ -68,8 +68,9 @@ def plot_spindle_counts(gt_stats, model_stats, save_dir):
     tp_vals = []
     fp_vals = []
 
-    for sid in sorted_ids:
+    for idx, sid in enumerate(sorted_ids):
         m_data = model_stats.get(sid)
+
         if m_data is None:
             sid_num = ''.join(filter(str.isdigit, sid))
             for k, v in model_stats.items():
@@ -79,8 +80,16 @@ def plot_spindle_counts(gt_stats, model_stats, save_dir):
                     break
 
         if m_data:
-            tp_vals.append(m_data.get('tp', 0))
-            fp_vals.append(m_data.get('fn', 0))
+            tp = m_data.get('tp', 0)
+            fp = m_data.get('fn', 0)
+            true_cnt = m_data.get('true_count', 0)  # Tämä on TP + FN
+
+            tp_vals.append(tp)
+            fp_vals.append(fp)
+
+            if true_cnt > 0:
+                kept[idx] = true_cnt
+
         else:
             tp_vals.append(0)
             fp_vals.append(0)
@@ -106,8 +115,7 @@ def plot_spindle_counts(gt_stats, model_stats, save_dir):
 
     ax.set_xlabel('Subject Number')
     ax.set_ylabel('Spindle Count')
-    folder_name = MODEL_RUN_DIR.name if MODEL_RUN_DIR else "Unknown"
-    ax.set_title(f'Spindle Count Analysis: Experts vs. Ground Truth vs. Model ({folder_name})')
+    ax.set_title(f'Spindle Count Analysis: Experts vs. Ground Truth vs. Model')
     ax.set_xticks(x)
     ax.set_xticklabels(sorted_labels)
 

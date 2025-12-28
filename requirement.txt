@@ -1,0 +1,7 @@
+torch>=1.12.0
+numpy
+scipy
+pandas
+matplotlib
+mne
+tqdm

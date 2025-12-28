@@ -10,10 +10,8 @@ class BaseLoader(ABC):
 
     @abstractmethod
     def get_subject_list(self) -> List[Dict[str, Any]]:
-        """Etsii tiedostot ja palauttaa listan potilaista ja heidän tiedostopoluistaan."""
         pass
 
     @abstractmethod
     def load_subject(self, subject_info: Dict[str, Any]) -> Optional[mne.io.Raw]:
-        """Lataa yksittäisen potilaan signaalit ja annotaatiot MNE-objektiksi."""
         pass
