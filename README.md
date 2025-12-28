@@ -9,7 +9,7 @@ The method has been developed and validated using the DREAMS Sleep Spindles Data
 ### 1. Data Preprocessing
 The pipeline processes raw EEG signals as follows:
 * **Bandpass Filtering:** 4th-order Butterworth filter (0.3–30 Hz).
-* **Sleep Stage Stratification:** Analysis restricted to NREM stages (N2 and N3); Wake and REM epochs excluded to minimize false positives.
+* **Sleep Stage Stratification:** Analysis restricted to NREM stages (N2 and N3); Wake and REM stages are excluded.
 * **Instance Normalization:** Independent Z-score normalization for each 5-second window to mitigate inter-subject amplitude variability.
 
 ### 2. Model Architecture
@@ -20,31 +20,47 @@ The pipeline processes raw EEG signals as follows:
 ### 3. Optimization Strategy
 Techniques for improved stability and generalization:
 * **Stochastic Weight Averaging (SWA):** Weights averaged over final epochs to approximate a broader, more robust local minimum.
-* **Ensemble Inference:** Final detection averages predictions from the "Best Model" (lowest validation loss) and the "SWA Model".
+* **Ensemble Inference:** The final detection utilizes a dual-model ensemble strategy that combines:
+    1.  **Best Model:** The model checkpoint with the lowest validation loss (peak performance).
+    2.  **SWA Model:** The model with averaged weights from the end of training (better generalization).
+    
+The ensemble is implemented by averaging the raw **logits** (pre-activation outputs) of both models *before* applying the sigmoid function. This "logit averaging" approach creates a smoother decision boundary and prevents a single overconfident model from dominating the prediction, resulting in more reliable event detection than simple probability averaging.
 
 ## Project Structure
 
 ```text
 ├── configs/
-│   └── dreams_config.py    # Main configuration for DREAMS dataset
+│   └── dreams_config.py    # Hyperparameters, recording constants, and path configurations
+│
 ├── core/
-│   ├── model.py            # Gated U-Net architecture implementation
-│   ├── dataset.py          # PyTorch Dataset and augmentation logic
-│   └── metrics.py          # Evaluation metrics and event detection logic
-├── data_loaders/           # Loaders for DREAMS/MASS datasets
-│   └── dreams_config.py 
-├── data_preprocess/        # Signal filtering and normalization tools
-│   ├── bandpassfilter.py            
-│   └── normalization.py          
-├── utils/                  # Logging and helper utilities
-│   ├── find_best_seed.py            
-│   └── logger.py  
-├── main.py                 # Main training and evaluation script
-├── data_handler.py         # Script for raw data preprocessing
-└── paths.py                # System path definitions
+│   ├── model.py            # 1D Gated U-Net architecture
+│   ├── dataset.py          # Dataset, DataLoader logic, and Augmentation
+│   └── evaluation.py       # Event-based metrics
+│
+├── data_loaders/           
+│   └── dreams_loader.py    # Parsers for DREAMS .edf signals and .txt annotations
+│
+├── postprocessing/         
+│   └── postprocessing.py   # Dual-threshold event detection, merging logic, and window stitching
+│
+├── preprocessing/          
+│   ├── bandpassfilter.py   # Butterworth bandpass filter implementation     
+│   └── normalization.py    # Robust Z-score normalization (IQR-based)
+│
+├── utils/                  
+│   ├── find_best_seed.py   
+│   ├── logger.py           # Centralized logging configuration
+│   └── reporting.py        # Generates detailed CSV error analysis and signal stats
+│
+├── main.py                 # Orchestrator for LOSO cross-validation, training, and inference
+├── data_handler.py         # Offline preprocessing: converts raw EDFs to optimized .npy tensors
+├── plot_results.py         # Visualization tool for performance charts
+└── paths.py                # Global path definitions
 ```
 
 ## Usage Instructions
+
+NOTE: OUTDATED!!!
 
 ### 1. Data Setup
 The project uses `paths.py` to locate data.
@@ -78,14 +94,13 @@ The model's performance was evaluated using Leave-One-Subject-Out (LOSO) cross-v
 
 | Subject       | F1-score | Precision | Recall | TP (Count) | FP (Count) | FN (Count) | mIoU (TPs) |
 |:--------------| :--- | :--- | :--- |:-----------|:-----------|:-----------| :--- |
-| **Excerpt 1** | 0.8073 | 0.7817 | 0.8346 | 111 | 31 | 22 | - |
-| **Excerpt 2** | 0.7947 | 0.7792 | 0.8108 | 60 | 17 | 14 | - |
-| **Excerpt 3** | 0.8434 | 0.8140 | 0.8750 | 35 | 8 | 5 | - |
-| **Excerpt 4** | 0.7600 | 0.7308 | 0.7917 | 19 | 7 | 5 | - |
-| **Excerpt 5** | 0.8000 | 0.7706 | 0.8317 | 84 | 25 | 17 | - |
-| **Excerpt 6** | 0.8195 | 0.8936 | 0.7568 | 84 | 10 | 27 | - |
-| **Average**   | **0.8041** | **0.7950** | **0.8168** | **-** | **-** | **-** | **0.7873** |
-
+| **Excerpt 1** | 0.8223 | 0.7712 | 0.8806 | 118 | 35 | 16 | - |
+| **Excerpt 2** | 0.8153 | 0.7711 | 0.8649 | 64 | 19 | 10 | - |
+| **Excerpt 3** | 0.8471 | 0.8000 | 0.9000 | 36 | 9 | 4 | - |
+| **Excerpt 4** | 0.8000 | 0.7333 | 0.8800 | 22 | 8 | 3 | - |
+| **Excerpt 5** | 0.8257 | 0.7826 | 0.8738 | 90 | 25 | 13 | - |
+| **Excerpt 6** | 0.8093 | 0.8529 | 0.7699 | 87 | 15 | 26 | - |
+| **Average** | **0.8199** | **0.7852** | **0.8615** | **-** | **-** | **-** | **0.7800** |
 ## License & Citation
 This project is open-source and available under the MIT License (see the LICENSE file for details). You are free to use, modify, and distribute this software for research and development purposes.
 
