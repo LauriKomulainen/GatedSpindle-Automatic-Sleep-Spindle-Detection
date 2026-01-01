@@ -4,7 +4,7 @@ from scipy.signal import butter, filtfilt
 import logging
 log = logging.getLogger(__name__)
 
-def apply_bandpass_filter(data, fs, lowcut, highcut, order=4):
+def apply_bandpass_filter(data, fs, lowcut, highcut, order):
     """
     Applies a zero-phase Butterworth bandpass filter.
     """

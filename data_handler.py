@@ -31,7 +31,6 @@ USE_INSTANCE_NORM = DATA_PARAMS['use_instance_norm']
 INCLUDED_STAGES = DATA_PARAMS['included_stages']
 HYPNO_RES = DATA_PARAMS['hypnogram_resolution_sec']
 
-
 def load_hypnogram(txt_dir: Path, subject_id: str):
     hypno_file = txt_dir / f"Hypnogram_{subject_id}.txt"
     if not hypno_file.exists():

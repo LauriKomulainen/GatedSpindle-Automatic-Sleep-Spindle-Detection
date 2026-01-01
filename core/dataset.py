@@ -6,19 +6,11 @@ import os
 from torch.utils.data import Dataset, DataLoader, ConcatDataset, Subset
 import logging
 import random
-from scipy.signal import butter, filtfilt
 from configs.dreams_config import DATA_PARAMS, METRIC_PARAMS
 from preprocessing.normalization import normalize_data
+from preprocessing.bandpassfilter import apply_bandpass_filter
 
 log = logging.getLogger(__name__)
-
-def butter_bandpass_filter(data, lowcut, highcut, fs, order=4):
-    nyquist = 0.5 * fs
-    low = lowcut / nyquist
-    high = highcut / nyquist
-    b, a = butter(order, [low, high], btype='band')
-    y = filtfilt(b, a, data)
-    return y
 
 class RandomAugment1D:
     def __init__(self, p=0.5):
@@ -52,14 +44,12 @@ class SpindleDataset(Dataset):
 
     def __getitem__(self, idx):
         # Channel 1: Raw EEG
-        raw_signal = np.array(self.x_mmap[idx], dtype=np.float32)
-        ch1 = torch.tensor(raw_signal, dtype=torch.float32).unsqueeze(0)
+        bandpass_filtered_signal = np.array(self.x_mmap[idx], dtype=np.float32)
+        ch1 = torch.tensor(bandpass_filtered_signal, dtype=torch.float32).unsqueeze(0)
 
         # Channel 2: Sigma Filtered
-        sigma_signal = butter_bandpass_filter(raw_signal, self.low_f, self.high_f, self.fs, order=4)
-
-        if self.use_instance_norm:
-            sigma_signal = normalize_data(sigma_signal)
+        sigma_signal = apply_bandpass_filter(bandpass_filtered_signal, self.fs, self.low_f, self.high_f, order=4)
+        sigma_signal = normalize_data(sigma_signal)
 
         ch2 = torch.tensor(sigma_signal.copy(), dtype=torch.float32).unsqueeze(0)
 
@@ -80,7 +70,7 @@ class SpindleDataset(Dataset):
 
 
 def get_dataloaders(processed_data_dir: str, batch_size: int, train_subject_ids: list, val_subject_ids: list,
-                    test_subject_ids: list, use_fraction: float = 1.0):
+                    test_subject_ids: list):
     if not os.path.exists(processed_data_dir):
         log.error(f"CRITICAL: Data directory not found: {processed_data_dir}")
         empty = DataLoader([], batch_size=batch_size)
@@ -112,16 +102,6 @@ def get_dataloaders(processed_data_dir: str, batch_size: int, train_subject_ids:
     train_ds = ConcatDataset(train_list) if train_list else []
     val_ds = ConcatDataset([datasets[sid] for sid in val_subject_ids if sid in datasets]) if val_subject_ids else []
     test_ds = ConcatDataset([datasets[sid] for sid in test_subject_ids if sid in datasets]) if test_subject_ids else []
-
-    if use_fraction < 1.0 and len(train_ds) > 0:
-        def get_subset(ds):
-            if len(ds) == 0: return ds
-            indices = random.sample(range(len(ds)), int(len(ds) * use_fraction))
-            return Subset(ds, indices)
-
-        train_ds = get_subset(train_ds)
-        val_ds = get_subset(val_ds)
-        test_ds = get_subset(test_ds)
 
     common = {'batch_size': batch_size, 'num_workers': 0, 'pin_memory': True}
 

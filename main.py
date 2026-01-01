@@ -24,7 +24,6 @@ from configs.dreams_config import (
     METRIC_PARAMS
 )
 
-
 def set_seed(seed=1):
     random.seed(seed)
     np.random.seed(seed)
@@ -144,7 +143,6 @@ if __name__ == "__main__":
 
         # 1. Load Data
         try:
-            # Note: We load data even in eval mode to get the test_loader
             train_loader, val_loader, test_loader = get_dataloaders(
                 processed_data_dir=paths.PROCESSED_DATA_DIR,
                 batch_size=params['batch_size'],
