@@ -13,6 +13,7 @@ from configs.dreams_config import DATA_PARAMS
 from preprocessing import bandpassfilter, normalization
 from data_loaders import dreams_loader
 import paths
+from utils.signal_visualization import save_three_channel_examples
 
 setup_logging("data_handler.log")
 log = logging.getLogger(__name__)
@@ -178,7 +179,7 @@ def plot_eeg_trace(signal, sfreq, s1_evs, s2_evs, subject_id, save_dir):
     plt.close()
 
 
-def segment_data_with_filtering(raw, hypnogram, window_sec, overlap_sec):
+def segment_data_with_filtering(raw, hypnogram, window_sec, overlap_sec, raw_unfiltered_array=None):
     fs = raw.info['sfreq']
     signal = raw.get_data()[0]
 
@@ -220,7 +221,10 @@ def segment_data_with_filtering(raw, hypnogram, window_sec, overlap_sec):
     overlap_samples = int(overlap_sec * fs)
     step_samples = window_samples - overlap_samples
 
-    all_windows, all_masks = [], []
+    all_windows = []
+    all_masks = []
+    all_raw_windows = []
+
     discarded_count = 0
     kept_count = 0
     use_hypno = hypnogram is not None
@@ -244,6 +248,10 @@ def segment_data_with_filtering(raw, hypnogram, window_sec, overlap_sec):
         sig_window = signal[start:end]
         mask_window = vote_mask[start:end]
 
+        if raw_unfiltered_array is not None:
+            raw_window_segment = raw_unfiltered_array[start:end]
+            all_raw_windows.append(raw_window_segment)
+
         if USE_INSTANCE_NORM:
             sig_window = normalization.normalize_data(sig_window)
 
@@ -251,8 +259,7 @@ def segment_data_with_filtering(raw, hypnogram, window_sec, overlap_sec):
         all_masks.append(mask_window)
 
     log.info(f"Hypnogram filtering: Kept {kept_count} windows, Discarded {discarded_count} (Wrong Stages).")
-    return np.array(all_windows), np.array(all_masks), n_total, n_kept
-
+    return np.array(all_windows), np.array(all_masks), n_total, n_kept, np.array(all_raw_windows)
 
 def main():
     log.info("Starting 1D Data Preprocessing")
@@ -264,6 +271,11 @@ def main():
     if PROCESSED_DATA_DIR.exists():
         log.warning(f"Cleaning previous data from: {PROCESSED_DATA_DIR}")
         shutil.rmtree(PROCESSED_DATA_DIR)
+
+    examples_dir = PLOTS_DIR / "Three_channel_examples"
+    if examples_dir.exists():
+        log.warning(f"Cleaning previous plots from: {examples_dir}")
+        shutil.rmtree(examples_dir)
 
     PROCESSED_DATA_DIR.mkdir(parents=True, exist_ok=True)
     PLOTS_DIR.mkdir(parents=True, exist_ok=True)
@@ -286,8 +298,9 @@ def main():
             continue
 
         fs = raw.info['sfreq']
-
         s1_events, s2_events = get_scorer_annotations(patient_file_group['annotation_files'], fs)
+
+        original_raw_signal = raw.get_data()[0].copy()
 
         signal_data = raw.get_data()[0]
         filtered_signal = bandpassfilter.apply_bandpass_filter(
@@ -305,8 +318,11 @@ def main():
         if hypnogram is None:
             log.warning(f"Skipping filtering for {patient_id} (No hypnogram found).")
 
-        x_windows, y_masks, n_union, n_kept = segment_data_with_filtering(
-            raw, hypnogram, window_sec=WINDOW_SEC, overlap_sec=OVERLAP_SEC
+        x_windows, y_masks, n_union, n_kept, x_raw_windows = segment_data_with_filtering(
+            raw, hypnogram,
+            window_sec=WINDOW_SEC,
+            overlap_sec=OVERLAP_SEC,
+            raw_unfiltered_array=original_raw_signal
         )
 
         subject_stats.append({
@@ -322,6 +338,8 @@ def main():
             continue
 
         log.info(f"Final 1D data shape. X: {x_windows.shape}, Y: {y_masks.shape}")
+
+        save_three_channel_examples(x_windows, y_masks, x_raw_windows, patient_id, PLOTS_DIR, fs=fs)
 
         x_path = PROCESSED_DATA_DIR / f"{patient_id}_X_1D.npy"
         y_path = PROCESSED_DATA_DIR / f"{patient_id}_Y_1D.npy"
