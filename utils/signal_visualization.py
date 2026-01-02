@@ -57,18 +57,18 @@ def save_three_channel_examples(x_data, y_data, raw_windows, subject_id, save_di
         axs[0].grid(True, alpha=0.3)
 
         # Plot 2: Model Input (0.3-30 Hz)
-        axs[1].plot(t_axis, sig_input, color='#333333', linewidth=1, label='3. Model Input (0.3-30Hz)')
+        axs[1].plot(t_axis, sig_input, color='#333333', linewidth=1, label='2. Model Input (0.3-30Hz)')
         axs[1].fill_between(t_axis, min(sig_input), max(sig_input), where=(mask > 0),
                             color='#e74c3c', alpha=0.3)
-        axs[1].set_ylabel("Norm. Amp") # Muutin y-akselin nimen vastaamaan normalisointia
+        axs[1].set_ylabel("Norm. Amplitude")
         axs[1].legend(loc='upper right', fontsize='x-small')
         axs[1].grid(True, alpha=0.3)
 
         # Plot 3: Sigma (11-16Hz)
-        axs[2].plot(t_axis, sig_sigma, color='#2980b9', linewidth=1, label='4. Sigma (11-16Hz)')
+        axs[2].plot(t_axis, sig_sigma, color='#2980b9', linewidth=1, label='3. Sigma (11-16Hz)')
         axs[2].fill_between(t_axis, min(sig_sigma), max(sig_sigma), where=(mask > 0),
                             color='#e74c3c', alpha=0.3)
-        axs[2].set_ylabel("Norm. Amp")
+        axs[2].set_ylabel("Norm. Amplitude")
         axs[2].set_xlabel("Time (s)")
         axs[2].legend(loc='upper right', fontsize='x-small')
         axs[2].grid(True, alpha=0.3)

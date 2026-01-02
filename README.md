@@ -24,67 +24,88 @@ Techniques for improved stability and generalization:
     1.  **Best Model:** The model checkpoint with the lowest validation loss (peak performance).
     2.  **SWA Model:** The model with averaged weights from the end of training (better generalization).
     
-The ensemble is implemented by averaging the raw **logits** (pre-activation outputs) of both models *before* applying the sigmoid function. This "logit averaging" approach creates a smoother decision boundary and prevents a single overconfident model from dominating the prediction, resulting in more reliable event detection than simple probability averaging.
+The ensemble is implemented by averaging the raw **logits** (pre-activation outputs) of both models before applying the sigmoid function. This "logit averaging" approach creates a smoother decision boundary and prevents a single overconfident model from dominating the prediction, resulting in more reliable event detection than simple probability averaging.
 
 ## Project Structure
 
 ```text
 ├── configs/
-│   └── dreams_config.py    # Hyperparameters, recording constants, and path configurations
+│   └── dreams_config.py        # Hyperparameters, recording constants, and path configurations
 │
 ├── core/
-│   ├── model.py            # 1D Gated U-Net architecture
-│   ├── dataset.py          # Dataset, DataLoader logic, and Augmentation
-│   └── evaluation.py       # Event-based metrics
+│   ├── model.py                # 1D Gated U-Net architecture
+│   ├── dataset.py              # Dataset, DataLoader logic, and Augmentation
+│   └── evaluation.py           # Event-based metrics
 │
 ├── data_loaders/           
-│   └── dreams_loader.py    # Parsers for DREAMS .edf signals and .txt annotations
+│   └── dreams_loader.py        # Parsers for DREAMS .edf signals and .txt annotations
 │
 ├── postprocessing/         
-│   └── postprocessing.py   # Dual-threshold event detection, merging logic, and window stitching
+│   └── postprocessing.py       # Dual-threshold event detection, merging logic, and window stitching
 │
 ├── preprocessing/          
-│   ├── bandpassfilter.py   # Butterworth bandpass filter implementation     
-│   └── normalization.py    # Robust Z-score normalization (IQR-based)
+│   ├── bandpassfilter.py       # Butterworth bandpass filter implementation     
+│   └── normalization.py        # Robust Z-score normalization (IQR-based)
 │
-├── utils/                  
-│   ├── find_best_seed.py   
-│   ├── logger.py           # Centralized logging configuration
-│   └── reporting.py        # Generates detailed CSV error analysis and signal stats
+├── utils/                
+│   ├── logger.py               # Centralized logging configuration
+│   ├── reporting.py            # Generates detailed CSV error analysis and signal stats
+│   └── signal_visualization.py # Plots RAW signal & input signals for model
 │
-├── main.py                 # Orchestrator for LOSO cross-validation, training, and inference
-├── data_handler.py         # Offline preprocessing: converts raw EDFs to optimized .npy tensors
-├── plot_results.py         # Visualization tool for performance charts
-└── paths.py                # Global path definitions
+├── main.py                     # Orchestrator for LOSO cross-validation, training, and inference
+├── data_handler.py             # Offline preprocessing: converts raw EDFs to optimized .npy tensors
+├── plot_results.py             # Visualization tool for performance charts
+└── paths.py                    # Global path definitions
 ```
 
 ## Usage Instructions
 
-NOTE: OUTDATED!!!
+### 1. Installation
 
-### 1. Data Setup
-The project uses `paths.py` to locate data.
-1.  Open `paths.py` and verify the `RAW_DREAMS_DATA_DIR` variable (default is `data/DREAMS`).
-2.  Place all DREAMS database files (both `.edf` and `.txt` annotations) directly into this folder.
+To ensure reproducibility, please follow these setup steps.
 
-### 2. Data Preprocessing
-Before training, convert the raw EEG data into processed tensors (`.npy` format).
+1. Install Python `3.13.0`
+* Note: The project has been tested with this specific version. Correct functionality cannot be guaranteed with other Python versions.
+2. Install the required Python packages using pip:
+```bash
+Pip install -r requirements.txt
+```
+
+### 2. Data Setup
+
+1. Download the DREAMS Sleep Spindle Database. Other datasets are not currently supported without code changes.
+2. Create a folder at data/DREAMS in the project root directory.
+3. Move all downloaded files (both .edf recordings and .txt annotations) directly into this folder.
+4. Open `paths.py` and ensure the RAW_DREAMS_DATA_DIR variable matches your data location (default is data/DREAMS).
+
+
+### 3. Data Preprocessing
+
+Before training, the raw EEG data must be converted into processed tensors (.npy format).
 ```bash
 python data_handler.py
 ```
 * This script performs bandpass filtering (0.3-30Hz), segmentation, and Z-score normalization.
-* Output: Processed files are saved to the data/processed directory (defined in paths.py).
-* Important: If you modify filtering parameters in dreams_config.py, you must re-run this script.
+* Processed files are saved to the data/processed directory (defined in paths.py).
+* If you modify filtering parameters in `dreams_config.py`, you must re-run this script to regenerate the data.
 
-### 3. Model Training
+### 4. Model Training
 
-Run the main training loop. This script performs the Leave-One-Subject-Out (LOSO) cross-validation.
+Run the main training loop to start the Leave-One-Subject-Out (LOSO) cross-validation.
 ```bash
 python main.py
 ```
-* The script automatically loads the preprocessed data.
-* It trains a model for each fold (holding one subject out for testing) using the settings in configs/dreams_config.py.
-* Logs, checkpoints, and detailed CSV error analysis reports are saved to model_reports/.
+* The script automatically loads the preprocessed data. 
+* It trains a model for each fold (holding one subject out for testing) using the hyperparameters defined in configs/dreams_config.py. 
+* Logs, model checkpoints, and detailed CSV error analysis reports are saved to the model_reports/ directory.
+
+NOTE: If you have already trained models and want to re-calculate metrics (e.g., to test a different threshold strategy) without retraining, use the evaluate mode:
+```bash
+python main.py --mode evaluate --run_dir model_reports/LOSO_run_YYYY-MM-DD_HH-MM-SS
+```
+* `--mode evaluate`: Skips the training process and loads saved models (.pth files). 
+* `--run_dir`: The path to the specific directory created during a previous training run.
+
 
 ## Performance Evaluation
 
