@@ -5,6 +5,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 import logging
 import os
+from tqdm import tqdm
 from torch.optim.swa_utils import AveragedModel, SWALR
 from configs.dreams_config import TRAINING_PARAMS
 
@@ -114,7 +115,7 @@ class GatedUNet(nn.Module):
 
 def train_model(model, train_loader, val_loader, optimizer_type, learning_rate, num_epochs, early_stopping_patience,
                 output_dir, fs, use_swa=True):
-    from tqdm import tqdm
+
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     if torch.backends.mps.is_available(): device = torch.device('mps')
 
