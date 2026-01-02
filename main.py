@@ -24,7 +24,7 @@ from configs.dreams_config import (
     METRIC_PARAMS
 )
 
-def set_seed(seed=1):
+def set_seed(seed):
     random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
@@ -79,10 +79,16 @@ if __name__ == "__main__":
                         help="Mode: 'train' starts new training, 'evaluate' tests existing models.")
     parser.add_argument('--run_dir', type=str, default=None,
                         help="Path to the existing run directory (required if mode='evaluate'). E.g., 'reports/LOSO_run_2023...'")
-
+    parser.add_argument('--seed', type=int, default=1, nargs='?', const=None,
+                        help="Random seed. Default is 1. If --seed is used without value, a random seed is picked.")
     args = parser.parse_args()
 
-    set_seed(1)
+    chosen_seed = args.seed
+    if chosen_seed is None:
+        chosen_seed = random.randint(1, 99999)
+        print(f"NOTE: Random execution requested. Generated seed: {chosen_seed}")
+
+    set_seed(chosen_seed)
 
     # Ensure output directory exists base
     os.makedirs(paths.REPORTS_DIR, exist_ok=True)
