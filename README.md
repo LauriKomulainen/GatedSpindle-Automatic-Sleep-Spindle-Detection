@@ -139,13 +139,13 @@ python main.py --mode train --repeats 3 --seed
 ### 2. Robustness test (With training fold shuffling)
 This experiment tests the model's ability to generalize across different subject combinations. By shuffling the validation subjects for each repeat (ensure the performance is not biased toward a specific subject pairing).
 ```bash
-python main.py --mode train --repeats 3 --seed --shuffle_folds
+python main.py --mode train --repeats 3 --seed 51143 --shuffle_folds
 ```
 Average performance of 3 runs (With training fold shuffling):
-* F1-score: TBD
-* Precision: TBD
-* Recall: TBD
-* mIoU: TBD
+* F1-score: 0.7770 ± 0.0143
+* Precision: 0.7651 ± 0.0476
+* Recall: 0.8119 ± 0.0290
+* mIoU: 0.7994 ± 0.0054
 
 ### 3. Reference Single-Run Performance (Seed = 1)
 
@@ -157,6 +157,7 @@ stability across random initializations. To reproduce the reported results, exec
 ```bash
 python main.py
 ```
+
 Average performance of 1 run (fixed seed):
 * F1-score: 0.8199 
 * Precision: 0.7852 
