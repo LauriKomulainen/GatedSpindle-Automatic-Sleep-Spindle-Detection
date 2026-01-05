@@ -2,7 +2,7 @@
 
 # --- Data & Preprocessing Parameters ---
 DATA_PARAMS = {
-    'fs': 200.0,
+    'fs': 200.0, #250
     'window_sec': 5.0,
     'overlap_sec': 2.5,
     'lowcut': 0.3,
@@ -33,7 +33,7 @@ TRAINING_PARAMS = {
 
 CV_CONFIG = {
     'folds_to_run': None
-    #'folds_to_run': [2,3]
+    #'folds_to_run': [3]
 }
 
 METRIC_PARAMS = {
@@ -45,7 +45,7 @@ METRIC_PARAMS = {
 }
 
 INFERENCE_PARAMS = {
-    'fixed_threshold': 0.6,
+    'fixed_threshold': 0.75,
     'inference_mode': 'ensemble', # Options: none (best), swa, ensemble
 }
 

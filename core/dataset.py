@@ -18,11 +18,8 @@ class RandomAugment1D:
 
     def __call__(self, signal):
         if random.random() < self.p:
-            gain = random.uniform(0.8, 1.2)
+            gain = random.uniform(0.9, 1.1)
             signal = signal * gain
-            noise_level = random.uniform(0.0, 0.02)
-            noise = torch.randn_like(signal) * noise_level
-            signal = signal + noise
         return signal
 
 class SpindleDataset(Dataset):
@@ -43,16 +40,23 @@ class SpindleDataset(Dataset):
         return self.length
 
     def __getitem__(self, idx):
-        # Channel 1: Raw EEG
         bandpass_filtered_signal = np.array(self.x_mmap[idx], dtype=np.float32)
+
+        # CH1: Raw EEG
         ch1 = torch.tensor(bandpass_filtered_signal, dtype=torch.float32).unsqueeze(0)
 
-        # Channel 2: Sigma Filtered
-        sigma_signal = apply_bandpass_filter(bandpass_filtered_signal, self.fs, self.low_f, self.high_f, order=4)
-        sigma_signal = normalize_data(sigma_signal)
-
+        # CH2: Sigma (11-16 Hz)
+        sigma_signal = apply_bandpass_filter(bandpass_filtered_signal, self.fs, 11, 16, order=4)
+        sigma_signal = normalize_data(sigma_signal)  # Tärkeä!
         ch2 = torch.tensor(sigma_signal.copy(), dtype=torch.float32).unsqueeze(0)
 
+        # CH3: Delta (0.4 - 4 Hz)
+        # Tämä antaa kontekstin (K-kompleksit, Slow Oscillations)
+        delta_signal = apply_bandpass_filter(bandpass_filtered_signal, self.fs, 0.4, 4.0, order=4)
+        delta_signal = normalize_data(delta_signal)
+        ch3 = torch.tensor(delta_signal.copy(), dtype=torch.float32).unsqueeze(0)
+
+        # Yhdistetään: Nyt shape on [3, seq_len]
         signal_tensor = torch.cat([ch1, ch2], dim=0)
 
         if self.augment:

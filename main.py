@@ -2,6 +2,7 @@
 
 import gc
 import os
+import shutil
 import torch
 import torch.nn as nn
 import logging
@@ -20,9 +21,9 @@ from configs.dreams_config import (
     TRAINING_PARAMS,
     DATA_PARAMS,
     CV_CONFIG,
-    INFERENCE_PARAMS,
-    METRIC_PARAMS
+    INFERENCE_PARAMS
 )
+
 
 def set_seed(seed):
     random.seed(seed)
@@ -54,6 +55,8 @@ class EnsembleWrapper(nn.Module):
 
 def log_metrics(logger, label, m):
     """Helper function for clean logging of metrics."""
+    if m is None:
+        return
     logger.info(
         f"[{label:<4}] "
         f"F1: {m['F1-score']:.4f} | "
@@ -78,197 +81,248 @@ if __name__ == "__main__":
     parser.add_argument('--mode', type=str, default='train', choices=['train', 'evaluate'],
                         help="Mode: 'train' starts new training, 'evaluate' tests existing models.")
     parser.add_argument('--run_dir', type=str, default=None,
-                        help="Path to the existing run directory (required if mode='evaluate'). E.g., 'reports/LOSO_run_2023...'")
+                        help="Path to the existing run directory (required if mode='evaluate').")
     parser.add_argument('--seed', type=int, default=1, nargs='?', const=None,
-                        help="Random seed. Default is 1. If --seed is used without value, a random seed is picked.")
+                        help="Base random seed. Subsequent repeats will increment this.")
+    parser.add_argument('--repeats', type=int, default=1,
+                        help="How many times to repeat the full Cross-Validation experiment.")
+    parser.add_argument('--shuffle_folds', action='store_true',
+                        help="If set, shuffles the subject order for each repeat to vary validation sets.")
+
     args = parser.parse_args()
 
-    chosen_seed = args.seed
-    if chosen_seed is None:
-        chosen_seed = random.randint(1, 99999)
-        print(f"NOTE: Random execution requested. Generated seed: {chosen_seed}")
-
-    set_seed(chosen_seed)
+    # Base seed handling
+    base_seed = args.seed
+    if base_seed is None:
+        base_seed = random.randint(1, 99999)
+        print(f"NOTE: Random execution requested. Base generated seed: {base_seed}")
 
     # Ensure output directory exists base
     os.makedirs(paths.REPORTS_DIR, exist_ok=True)
 
-    # SETUP OUTPUT DIRECTORY
+    # SETUP MASTER OUTPUT DIRECTORY
     if args.mode == 'train':
         timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-        output_dir = os.path.join(paths.REPORTS_DIR, f"LOSO_run_{timestamp}")
-        os.makedirs(output_dir, exist_ok=True)
-        log_file = "training.log"
+        master_output_dir = os.path.join(paths.REPORTS_DIR, f"LOSO_Experiment_{timestamp}")
+        os.makedirs(master_output_dir, exist_ok=True)
+        log_file_name = "training.log"
     else:
         # Evaluation mode
         if args.run_dir is None:
-            raise ValueError("In 'evaluate' mode, you MUST provide --run_dir (path to previous results).")
+            raise ValueError("In 'evaluate' mode, you MUST provide --run_dir.")
         if not os.path.exists(args.run_dir):
             raise FileNotFoundError(f"Run directory not found: {args.run_dir}")
-        output_dir = args.run_dir
-        log_file = "evaluation_rerun.log"
+        master_output_dir = args.run_dir
+        log_file_name = "evaluation_rerun.log"
 
-    setup_logging(log_file)
+    setup_logging(log_file_name)
     log = logging.getLogger(__name__)
 
-    # --- 1. LOG CONFIGURATION ---
+    # 1. LOG CONFIGURATION
     log.info(f"EXPERIMENT CONFIGURATION (Mode: {args.mode.upper()})")
-    if args.mode == 'evaluate':
-        log.info(f"Loading models from: {output_dir}")
+    log.info(f"Repeats requested: {args.repeats}")
 
     log_param_dict(log, "TRAINING_PARAMS", TRAINING_PARAMS)
     log_param_dict(log, "DATA_PARAMS", DATA_PARAMS)
     log_param_dict(log, "INFERENCE_PARAMS", INFERENCE_PARAMS)
-    log_param_dict(log, "METRIC_PARAMS", METRIC_PARAMS)
     log_param_dict(log, "CV_CONFIG", CV_CONFIG)
 
-    params = TRAINING_PARAMS
-    USE_SWA = params.get('use_swa', False)
+    grand_results = defaultdict(list)
 
-    all_subjects = DATA_PARAMS['subjects_list']
-    all_metrics = defaultdict(list)
+    # REPEATS LOOP
+    for repeat_idx in range(args.repeats):
+        current_seed = base_seed + repeat_idx
+        set_seed(current_seed)
+        log.info(f"STARTING REPEAT {repeat_idx + 1} / {args.repeats} (Seed: {current_seed})")
 
-    selected_folds = CV_CONFIG['folds_to_run']
-    folds_to_iterate = selected_folds if selected_folds else range(len(all_subjects))
-
-    for k in folds_to_iterate:
-        test_subject_id = [all_subjects[k]]
-        val_subject_id = [all_subjects[(k + 1) % len(all_subjects)]]
-        train_subject_ids = [s for s in all_subjects if s != test_subject_id[0] and s != val_subject_id[0]]
-
-        fold_name = f"Fold_{k + 1}_(Test={test_subject_id[0]})"
-        log.info(f"\n{'=' * 20} STARTING FOLD: {fold_name} {'=' * 20}")
-
-        fold_output_dir = os.path.join(output_dir, fold_name)
-
+        # Define run directory for this repeat
         if args.mode == 'train':
-            os.makedirs(fold_output_dir, exist_ok=True)
-        elif not os.path.exists(fold_output_dir):
-            log.warning(f"Directory {fold_output_dir} not found! Skipping this fold.")
-            continue
-
-        # 1. Load Data
-        try:
-            train_loader, val_loader, test_loader = get_dataloaders(
-                processed_data_dir=paths.PROCESSED_DATA_DIR,
-                batch_size=params['batch_size'],
-                train_subject_ids=train_subject_ids,
-                val_subject_ids=val_subject_id,
-                test_subject_ids=test_subject_id,
-            )
-        except Exception as e:
-            log.error(f"Data loading failed: {e}")
-            continue
-
-        # 2. Train (ONLY IF MODE IS TRAIN)
-        if args.mode == 'train':
-            model = GatedUNet(dropout_rate=params['dropout_rate'])
-            train_losses, val_losses = train_model(
-                model=model,
-                train_loader=train_loader,
-                val_loader=val_loader,
-                optimizer_type=params['optimizer_type'],
-                learning_rate=params['learning_rate'],
-                num_epochs=params['num_epochs'],
-                early_stopping_patience=params['early_stopping_patience'],
-                output_dir=fold_output_dir,
-                fs=DATA_PARAMS['fs'],
-                use_swa=USE_SWA
-            )
-            # Cleanup training model to save memory before eval
-            del model
-            torch.cuda.empty_cache()
-
-        # 3. Evaluation - COMPARE METHODS
-        device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-
-        # Load Best Model
-        model_best = GatedUNet(dropout_rate=0.0).to(device)
-        best_path = os.path.join(fold_output_dir, 'unet_model_best.pth')
-
-        if os.path.exists(best_path):
-            log.info(f"Loading model from {best_path}")
-            model_best.load_state_dict(torch.load(best_path, map_location=device))
+            run_output_dir = os.path.join(master_output_dir, f"Repeat_{repeat_idx + 1}")
+            os.makedirs(run_output_dir, exist_ok=True)
         else:
-            log.error(f"Best model not found at {best_path}!")
-            continue
-
-        # Load SWA Model
-        model_swa = None
-        if USE_SWA:
-            swa_path = os.path.join(fold_output_dir, 'unet_model_swa.pth')
-            if os.path.exists(swa_path):
-                model_swa = GatedUNet(dropout_rate=0.0).to(device)
-                model_swa.load_state_dict(torch.load(swa_path, map_location=device))
+            # In eval mode, we assume the structure exists.
+            possible_subdir = os.path.join(master_output_dir, f"Repeat_{repeat_idx + 1}")
+            if os.path.exists(possible_subdir):
+                run_output_dir = possible_subdir
             else:
-                if args.mode == 'evaluate':
-                    log.info("SWA model not found, skipping SWA evaluation.")
+                run_output_dir = master_output_dir
+
+        params = TRAINING_PARAMS
+        USE_SWA = params.get('use_swa', False)
+
+        all_subjects = list(DATA_PARAMS['subjects_list'])
+
+        if args.shuffle_folds:
+            random.shuffle(all_subjects)
+            log.info(f"Subject order shuffled for this repeat: {all_subjects}")
+
+        repeat_metrics = defaultdict(list)
+
+        selected_folds = CV_CONFIG['folds_to_run']
+        folds_to_iterate = selected_folds if selected_folds else range(len(all_subjects))
+
+        # CROSS-VALIDATION LOOP
+        for k in folds_to_iterate:
+            test_subject_id = [all_subjects[k]]
+            val_subject_id = [all_subjects[(k + 1) % len(all_subjects)]]
+            train_subject_ids = [s for s in all_subjects if s != test_subject_id[0] and s != val_subject_id[0]]
+
+            fold_name = f"Fold_{k + 1}_(Test={test_subject_id[0]})"
+            log.info(f"Repeat {repeat_idx + 1}: {fold_name}")
+
+            fold_output_dir = os.path.join(run_output_dir, fold_name)
+
+            if args.mode == 'train':
+                os.makedirs(fold_output_dir, exist_ok=True)
+            elif not os.path.exists(fold_output_dir):
+                log.warning(f"Directory {fold_output_dir} not found! Skipping.")
+                continue
+
+            # 1. Load Data
+            try:
+                train_loader, val_loader, test_loader = get_dataloaders(
+                    processed_data_dir=paths.PROCESSED_DATA_DIR,
+                    batch_size=params['batch_size'],
+                    train_subject_ids=train_subject_ids,
+                    val_subject_ids=val_subject_id,
+                    test_subject_ids=test_subject_id,
+                )
+            except Exception as e:
+                log.error(f"Data loading failed: {e}")
+                continue
+
+            # 2. Train (ONLY IF MODE IS TRAIN)
+            if args.mode == 'train':
+                model = GatedUNet(dropout_rate=params['dropout_rate'])
+                train_model(
+                    model=model,
+                    train_loader=train_loader,
+                    val_loader=val_loader,
+                    optimizer_type=params['optimizer_type'],
+                    learning_rate=params['learning_rate'],
+                    num_epochs=params['num_epochs'],
+                    early_stopping_patience=params['early_stopping_patience'],
+                    output_dir=fold_output_dir,
+                    fs=DATA_PARAMS['fs'],
+                    use_swa=USE_SWA
+                )
+                del model
+                torch.cuda.empty_cache()
+
+            # --- 3. Evaluation (Common logic for both Train & Evaluate) ---
+            metrics_best = None
+            metrics_swa = None
+            metrics_ens = None
+            final_metrics = None
+
+            device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+
+            # Load Best Model
+            best_path = os.path.join(fold_output_dir, 'unet_model_best.pth')
+            if not os.path.exists(best_path):
+                log.warning(f"Best model not found at {best_path}. Skipping evaluation for this fold.")
+                continue
+
+            try:
+                model_best = GatedUNet(dropout_rate=0.0).to(device)
+                model_best.load_state_dict(torch.load(best_path, map_location=device))
+                log.info(f"Loaded model from {best_path}")
+
+                # Threshold
+                if INFERENCE_PARAMS['fixed_threshold'] is not None:
+                    optimal_thresh = INFERENCE_PARAMS['fixed_threshold']
                 else:
-                    log.warning("SWA model wanted but not found.")
+                    optimal_thresh = find_optimal_threshold(model_best, val_loader)
 
-        if INFERENCE_PARAMS['fixed_threshold'] is not None:
-            optimal_thresh = INFERENCE_PARAMS['fixed_threshold']
-            log.info(f"Using FIXED threshold: {optimal_thresh}")
+                # A. Evaluate BEST
+                metrics_best = compute_event_based_metrics(
+                    model_best, test_loader, optimal_thresh,
+                    f"{test_subject_id[0]}_best", fold_output_dir
+                )
+                log_metrics(log, "BEST", metrics_best)
+
+                # B. Evaluate SWA (if enabled and exists)
+                model_swa = None
+                if USE_SWA:
+                    swa_path = os.path.join(fold_output_dir, 'unet_model_swa.pth')
+                    if os.path.exists(swa_path):
+                        model_swa = GatedUNet(dropout_rate=0.0).to(device)
+                        model_swa.load_state_dict(torch.load(swa_path, map_location=device))
+
+                        metrics_swa = compute_event_based_metrics(
+                            model_swa, test_loader, optimal_thresh,
+                            f"{test_subject_id[0]}_swa", fold_output_dir
+                        )
+                        log_metrics(log, "SWA", metrics_swa)
+
+                        # C. Evaluate ENSEMBLE
+                        ensemble_model = EnsembleWrapper(model_best, model_swa).to(device)
+                        metrics_ens = compute_event_based_metrics(
+                            ensemble_model, test_loader, optimal_thresh,
+                            f"{test_subject_id[0]}_ens", fold_output_dir
+                        )
+                        log_metrics(log, "ENS", metrics_ens)
+                    else:
+                        if args.mode == 'evaluate':
+                            log.info("SWA model not found, skipping SWA/Ensemble.")
+
+                # 4. Select Final Metrics
+                selected_mode = INFERENCE_PARAMS['inference_mode']
+                final_metrics = metrics_best  # Default fallback
+
+                if selected_mode == 'swa' and metrics_swa:
+                    final_metrics = metrics_swa
+                elif selected_mode == 'ensemble' and metrics_ens:
+                    final_metrics = metrics_ens
+
+                log.info(
+                    f"Repeat {repeat_idx + 1} | Fold {k + 1} -> Final ({selected_mode.upper()}) F1: {final_metrics['F1-score']:.4f}")
+
+                # Save metrics for summary
+                for key, value in final_metrics.items():
+                    repeat_metrics[key].append(value)
+
+                # Cleanup
+                del model_best
+                if model_swa: del model_swa
+                torch.cuda.empty_cache()
+                gc.collect()
+
+            except Exception as e:
+                log.error(f"Error during evaluation of {test_subject_id[0]}: {e}")
+                import traceback
+
+                traceback.print_exc()
+
+        # REPEAT SUMMARY
+        log.info(f"\n--- SUMMARY FOR REPEAT {repeat_idx + 1}")
+        if len(repeat_metrics) > 0:
+            for key, values in repeat_metrics.items():
+                mean_val = np.mean(values)
+                log.info(f"{key:<15}: {mean_val:.4f}")
+                grand_results[key].append(mean_val)
         else:
-            log.info("Finding optimal threshold...")
-            optimal_thresh = find_optimal_threshold(model_best, val_loader)
-            log.info(f"Optimal threshold determined: {optimal_thresh:.2f}")
+            log.warning("No metrics collected for this repeat.")
 
-        log.info(f"\n--- COMPARISON FOR {test_subject_id[0]} (Thresh: {optimal_thresh}) ---")
-        log.info(f"{'Type':<6} {'F1':<8} {'Prec':<8} {'Rec':<8} {'TP':<5} {'FP':<5} {'FN':<5}")
-        log.info("-" * 60)
+    log.info(f"FINAL EXPERIMENT RESULTS OVER {args.repeats} REPEATS")
 
-        # A. Evaluate BEST
-        metrics_best = compute_event_based_metrics(model_best, test_loader, optimal_thresh, test_subject_id[0],
-                                                   fold_output_dir)
-        log_metrics(log, "BEST", metrics_best)
-
-        metrics_swa = None
-        metrics_ens = None
-
-        # B. Evaluate SWA
-        if model_swa:
-            metrics_swa = compute_event_based_metrics(model_swa, test_loader, optimal_thresh, test_subject_id[0],
-                                                      fold_output_dir)
-            log_metrics(log, "SWA", metrics_swa)
-
-            # C. Evaluate ENSEMBLE
-            ensemble_model = EnsembleWrapper(model_best, model_swa).to(device)
-            metrics_ens = compute_event_based_metrics(ensemble_model, test_loader, optimal_thresh, test_subject_id[0],
-                                                      fold_output_dir)
-            log_metrics(log, "ENS", metrics_ens)
-
-        log.info("-" * 60)
-
-        # 4. Select Final Metrics based on Config
-        selected_mode = INFERENCE_PARAMS['inference_mode']
-        final_metrics = metrics_best  # default
-
-        if selected_mode == 'swa' and metrics_swa:
-            final_metrics = metrics_swa
-        elif selected_mode == 'ensemble' and metrics_ens:
-            final_metrics = metrics_ens
-
-        log.info(f"--> SELECTED FINAL METRICS ({selected_mode.upper()}): F1 {final_metrics['F1-score']:.4f}")
-
-        for key, value in final_metrics.items():
-            all_metrics[key].append(value)
-
-        del model_best, model_swa
-        torch.cuda.empty_cache()
-        gc.collect()
-
-    log.info("\n" + "=" * 80)
-    log.info("FULL LOSO CROSS-VALIDATION COMPLETE")
-    if len(all_metrics) > 0:
-        log.info(f"{'Metric':<15} {'Mean':<10} {'Std':<10}")
-        log.info("-" * 40)
-        for key, values in all_metrics.items():
+    if len(grand_results) > 0:
+        log.info(f"{'Metric':<15} {'Mean':<10} {'Std Dev':<10}")
+        for key, values in grand_results.items():
             mean = np.mean(values)
             std = np.std(values)
             log.info(f"{key:<15} {mean:.4f}     (± {std:.4f})")
 
-    if args.mode == 'train':
-        log.info(f"All results saved to directory: {output_dir}")
-    else:
-        log.info("Evaluation complete.")
+    log.info(f"Experiment log saved to: {master_output_dir}")
+
+    logging.shutdown()
+    log_dir = "logs"
+    source_log_path = os.path.join(log_dir, log_file_name)
+    target_log_path = os.path.join(master_output_dir, log_file_name)
+
+    if os.path.exists(source_log_path):
+        try:
+            shutil.copy2(source_log_path, target_log_path)
+            print(f"--> LOG FILE COPIED SUCCESSFULLY FROM {source_log_path} TO: {target_log_path}")
+        except Exception as e:
+            print(f"--> WARNING: Could not move log file. It remains at {source_log_path}. Error: {e}")

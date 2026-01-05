@@ -355,7 +355,7 @@ def main():
         log.info(f"Subject statistics saved to {stats_file}")
 
     end_time = time.time()
-    log.info(f"\nPreprocessing complete. Total time: {end_time - start_time:.2f} s")
+    log.info(f"Preprocessing complete. Total time: {end_time - start_time:.2f} s")
 
 
 if __name__ == "__main__":

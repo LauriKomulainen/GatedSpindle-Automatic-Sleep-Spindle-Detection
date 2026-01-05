@@ -12,6 +12,12 @@ from configs.dreams_config import TRAINING_PARAMS
 log = logging.getLogger(__name__)
 
 class DiceBCELoss(nn.Module):
+    """
+    Combined Dice loss and Binary Cross-Entropy (BCE) loss.
+
+    Dice loss encourages overlap between prediction and target masks,
+    while BCE provides stable gradient behavior.
+    """
     def __init__(self, smooth=1.0):
         super(DiceBCELoss, self).__init__()
         self.smooth = smooth
@@ -26,14 +32,28 @@ class DiceBCELoss(nn.Module):
 
 
 class ConvBlock(nn.Module):
+    """
+    Residual convolutional block with two 1D convolutions.
+
+    Each block consists of:
+    - Conv1D → InstanceNorm → ReLU
+    - Conv1D → InstanceNorm
+    - Residual (skip) connection
+    """
     def __init__(self, in_channels, out_channels, kernel_size=7):
         super(ConvBlock, self).__init__()
         padding = "same"
+
+        # First convolutional layer
         self.conv1 = nn.Conv1d(in_channels, out_channels, kernel_size, padding=padding)
         self.bn1 = nn.InstanceNorm1d(out_channels, affine=True)
         self.relu = nn.ReLU(inplace=True)
+
+        # Second convolutional layer
         self.conv2 = nn.Conv1d(out_channels, out_channels, kernel_size, padding=padding)
         self.bn2 = nn.InstanceNorm1d(out_channels, affine=True)
+
+        # Residual shortcut
         self.shortcut = nn.Identity()
         if in_channels != out_channels:
             self.shortcut = nn.Sequential(
@@ -43,44 +63,93 @@ class ConvBlock(nn.Module):
 
     def forward(self, x):
         residual = self.shortcut(x)
+
         out = self.conv1(x)
         out = self.bn1(out)
         out = self.relu(out)
+
         out = self.conv2(out)
         out = self.bn2(out)
+
+        # Residual addition
         out += residual
         out = self.relu(out)
+
         return out
 
 
 class DecoderBlock(nn.Module):
+    """
+    Decoder block consisting of upsampling followed by a convolutional block.
+
+    The upsampled feature map is concatenated with the corresponding
+    encoder feature map via skip connections.
+    """
     def __init__(self, in_channels, out_channels, scale_factor=2):
         super(DecoderBlock, self).__init__()
-        self.up = nn.Upsample(scale_factor=scale_factor, mode="linear", align_corners=False)
+
+        # Linear upsampling along the temporal dimension
+        self.up = nn.Upsample(
+            scale_factor=scale_factor,
+            mode="linear",
+            align_corners=False
+        )
+
+        # Convolutional refinement after concatenation
         self.conv = ConvBlock(in_channels, out_channels)
 
     def forward(self, x, skip):
         x = self.up(x)
+
+        # Temporal dimensions match before concatenation
         if x.size(2) != skip.size(2):
-            x = F.interpolate(x, size=skip.size(2), mode='linear', align_corners=False)
+            x = F.interpolate(
+                x,
+                size=skip.size(2),
+                mode='linear',
+                align_corners=False
+            )
+
+        # Concatenate decoder and encoder features
         x = torch.cat([x, skip], dim=1)
+
         return self.conv(x)
 
 
 class GatedUNet(nn.Module):
+    """
+    1D Gated U-Net architecture for time-series segmentation.
+
+    The model consists of:
+    - An encoder–decoder structure composed of residual convolutional blocks
+      (22 Conv1D layers in total, including projection shortcuts)
+    - Symmetric skip connections between encoder and decoder stages
+    - Instance normalization and ReLU non-linearities throughout the network
+    - A two-layer MLP gating head (256→64→1) operating on globally pooled bottleneck features
+    """
     def __init__(self, dropout_rate=0.2):
         super(GatedUNet, self).__init__()
+
+        # Input normalization (2-channel input)
         self.input_norm = nn.InstanceNorm1d(2, affine=True)
+
+        # Encoder
         self.enc1 = ConvBlock(2, 32)
         self.pool1 = nn.MaxPool1d(2)
         self.drop1 = nn.Dropout(dropout_rate)
+
         self.enc2 = ConvBlock(32, 64)
         self.pool2 = nn.MaxPool1d(2)
         self.drop2 = nn.Dropout(dropout_rate)
+
         self.enc3 = ConvBlock(64, 128)
         self.pool3 = nn.MaxPool1d(2)
         self.drop3 = nn.Dropout(dropout_rate)
+
+        # Bottleneck
         self.bottleneck = ConvBlock(128, 256)
+
+        # Global gating branch
         self.global_pool = nn.AdaptiveAvgPool1d(1)
         self.gate_fc = nn.Sequential(
             nn.Linear(256, 64),
@@ -88,28 +157,45 @@ class GatedUNet(nn.Module):
             nn.Dropout(0.3),
             nn.Linear(64, 1)
         )
+
+        # Decoder
         self.dec1 = DecoderBlock(256 + 128, 128)
         self.dec2 = DecoderBlock(128 + 64, 64)
         self.dec3 = DecoderBlock(64 + 32, 32)
+
+        # Final segmentation output
         self.final_conv = nn.Conv1d(32, 1, kernel_size=1)
 
     def forward(self, x):
+        # Normalize input
         x = self.input_norm(x)
+
+        # Encoder forward pass
         e1 = self.enc1(x)
-        p1 = self.pool1(e1)
-        p1 = self.drop1(p1)
+        p1 = self.drop1(self.pool1(e1))
+
         e2 = self.enc2(p1)
-        p2 = self.pool2(e2)
-        p2 = self.drop2(p2)
+        p2 = self.drop2(self.pool2(e2))
+
         e3 = self.enc3(p2)
-        p3 = self.pool3(e3)
-        p3 = self.drop3(p3)
+        p3 = self.drop3(self.pool3(e3))
+
+        # Bottleneck
         b = self.bottleneck(p3)
-        gate_logits = self.gate_fc(self.global_pool(b).view(b.size(0), -1))
+
+        # Global gating output
+        gate_logits = self.gate_fc(
+            self.global_pool(b).view(b.size(0), -1)
+        )
+
+        # Decoder forward pass
         d1 = self.dec1(b, e3)
         d2 = self.dec2(d1, e2)
         d3 = self.dec3(d2, e1)
+
+        # Segmentation mask output (logits)
         mask_logits = self.final_conv(d3)
+
         return mask_logits, gate_logits
 
 
@@ -128,7 +214,9 @@ def train_model(model, train_loader, val_loader, optimizer_type, learning_rate, 
     elif optimizer_type == 'AdamW':
         optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate, weight_decay=weight_decay)
 
-    scheduler = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(optimizer, T_0=10, T_mult=2, eta_min=1e-6)
+    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+        optimizer, mode='min', factor=0.5, patience=10, min_lr=1e-6
+    )
 
     swa_model = None
     swa_scheduler = None
@@ -159,6 +247,7 @@ def train_model(model, train_loader, val_loader, optimizer_type, learning_rate, 
         model.train()
         ep_loss = 0
 
+        # Batch-silmukka
         for x, y_mask, y_label in tqdm(train_loader, desc=f"Epoch {epoch + 1}"):
             x, y_mask, y_label = x.to(device), y_mask.to(device), y_label.to(device)
             optimizer.zero_grad()
@@ -173,15 +262,12 @@ def train_model(model, train_loader, val_loader, optimizer_type, learning_rate, 
             optimizer.step()
             ep_loss += loss.item()
 
-            if use_swa and epoch < swa_start_epoch:
-                scheduler.step(epoch + x.size(0) / len(train_loader))
-            elif not use_swa:
-                scheduler.step(epoch + x.size(0) / len(train_loader))
+            # KORJAUS: TÄSTÄ POISTETTU SE VÄÄRÄ SCHEDULER.STEP()
 
         avg_train = ep_loss / len(train_loader)
         train_losses.append(avg_train)
 
-        # SWA Update Logic
+        # SWA Update Logic (tämä on ok, SWA:lla on oma scheduler)
         if use_swa and epoch >= swa_start_epoch:
             swa_model.update_parameters(model)
             swa_scheduler.step()
@@ -189,6 +275,7 @@ def train_model(model, train_loader, val_loader, optimizer_type, learning_rate, 
         else:
             lr_now = optimizer.param_groups[0]['lr']
 
+        # Validointi
         model.eval()
         val_loss = 0
         with torch.no_grad():
@@ -202,13 +289,15 @@ def train_model(model, train_loader, val_loader, optimizer_type, learning_rate, 
         avg_val = val_loss / len(val_loader)
         val_losses.append(avg_val)
 
-        status_msg = ""
+        # KORJAUS: Schedulerin päivitys TÄSSÄ, validointilossin perusteella
+        if not use_swa or epoch < swa_start_epoch:
+            scheduler.step(avg_val)
 
+        status_msg = ""
         if avg_val < best_val_loss:
             best_val_loss = avg_val
             if not (use_swa and epoch >= swa_start_epoch):
                 patience_counter = 0
-
             torch.save(model.state_dict(), os.path.join(output_dir, 'unet_model_best.pth'))
             best_tag = "(New Best!) "
         else:
@@ -231,15 +320,11 @@ def train_model(model, train_loader, val_loader, optimizer_type, learning_rate, 
 
         if use_swa and epoch < swa_start_epoch and patience_counter >= early_stopping_patience:
             log.info(f"Early stopping triggered (Epoch {epoch + 1}). Forcing SWA start NOW.")
-
             swa_start_epoch = epoch + 1
             patience_counter = 0
-
             new_limit = swa_start_epoch + planned_swa_len
             actual_stop_epoch = min(num_epochs, new_limit)
-
-            log.info(
-                f"Adjusting training limit: Will run SWA until epoch {actual_stop_epoch} (Duration: {planned_swa_len})")
+            log.info(f"Adjusting training limit: Will run SWA until epoch {actual_stop_epoch} (Duration: {planned_swa_len})")
 
     if use_swa and swa_model is not None:
         if swa_start_epoch < actual_stop_epoch:
