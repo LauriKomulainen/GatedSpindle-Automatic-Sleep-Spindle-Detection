@@ -9,14 +9,19 @@ import logging
 import random
 import argparse
 import numpy as np
-from datetime import datetime
-from collections import defaultdict
 import paths
 
+from datetime import datetime
+from collections import defaultdict
 from utils.logger import setup_logging
 from core.dataset import get_dataloaders
 from core.model import GatedUNet, train_model
-from core.evaluation import compute_event_based_metrics, find_optimal_threshold
+from core.evaluation import (
+    compute_event_based_metrics,
+    find_optimal_threshold,
+    aggregate_and_save_summary,
+    save_final_experiment_summary
+)
 from configs.dreams_config import (
     TRAINING_PARAMS,
     DATA_PARAMS,
@@ -54,7 +59,6 @@ class EnsembleWrapper(nn.Module):
 
 
 def log_metrics(logger, label, m):
-    """Helper function for clean logging of metrics."""
     if m is None:
         return
     logger.info(
@@ -69,7 +73,6 @@ def log_metrics(logger, label, m):
 
 
 def log_param_dict(logger, name, d):
-    """Helper function to pretty-print configuration dictionaries."""
     logger.info(f"--- {name} ---")
     for k, v in d.items():
         logger.info(f"  {k:<25}: {v}")
@@ -194,8 +197,7 @@ if __name__ == "__main__":
                     first_sample_data = train_loader.dataset[0][0]
 
                 num_channels = first_sample_data.shape[0]
-
-                log.info(f"Detected input channels from data: {num_channels}")
+                log.info(f"Detected input channels: {num_channels}")
 
             except Exception as e:
                 log.error(f"Data loading failed: {e}")
@@ -213,117 +215,123 @@ if __name__ == "__main__":
                     num_epochs=params['num_epochs'],
                     early_stopping_patience=params['early_stopping_patience'],
                     output_dir=fold_output_dir,
-                    fs=DATA_PARAMS['fs'],
                     use_swa=USE_SWA
                 )
                 del model
                 torch.cuda.empty_cache()
 
-            # 3. Evaluation (Common logic for both Train & Evaluate)
-            metrics_best = None
-            metrics_swa = None
-            metrics_ens = None
-            final_metrics = None
+                # 3. Evaluation (Common logic for both Train & Evaluate)
+                metrics_best = None
+                metrics_swa = None
+                metrics_ens = None
+                final_metrics = None
 
-            device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+                device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
-            # Load Best Model
-            best_path = os.path.join(fold_output_dir, 'unet_model_best.pth')
-            if not os.path.exists(best_path):
-                log.warning(f"Best model not found at {best_path}. Skipping evaluation for this fold.")
-                continue
+                # Load Best Model
+                best_path = os.path.join(fold_output_dir, 'unet_model_best.pth')
+                if not os.path.exists(best_path):
+                    log.warning(f"Best model not found at {best_path}. Skipping evaluation for this fold.")
+                    continue
 
-            try:
-                model_best = GatedUNet(num_channels, dropout_rate=0.0).to(device)
-                model_best.load_state_dict(torch.load(best_path, map_location=device))
-                log.info(f"Loaded model from {best_path}")
+                try:
+                    model_best = GatedUNet(num_channels, dropout_rate=0.0).to(device)
+                    model_best.load_state_dict(torch.load(best_path, map_location=device))
+                    log.info(f"Loaded model from {best_path}")
 
-                # Threshold
-                if INFERENCE_PARAMS['fixed_threshold'] is not None:
-                    optimal_thresh = INFERENCE_PARAMS['fixed_threshold']
-                else:
-                    optimal_thresh = find_optimal_threshold(model_best, val_loader)
-
-                # A. Evaluate BEST
-                metrics_best = compute_event_based_metrics(
-                    model_best, test_loader, optimal_thresh,
-                    f"{test_subject_id[0]}_best", fold_output_dir
-                )
-                log_metrics(log, "BEST", metrics_best)
-
-                # B. Evaluate SWA (if enabled and exists)
-                model_swa = None
-                if USE_SWA:
-                    swa_path = os.path.join(fold_output_dir, 'unet_model_swa.pth')
-                    if os.path.exists(swa_path):
-                        model_swa = GatedUNet(num_channels, dropout_rate=0.0).to(device)
-                        model_swa.load_state_dict(torch.load(swa_path, map_location=device))
-
-                        metrics_swa = compute_event_based_metrics(
-                            model_swa, test_loader, optimal_thresh,
-                            f"{test_subject_id[0]}_swa", fold_output_dir
-                        )
-                        log_metrics(log, "SWA", metrics_swa)
-
-                        # C. Evaluate ENSEMBLE
-                        ensemble_model = EnsembleWrapper(model_best, model_swa).to(device)
-                        metrics_ens = compute_event_based_metrics(
-                            ensemble_model, test_loader, optimal_thresh,
-                            f"{test_subject_id[0]}_ens", fold_output_dir
-                        )
-                        log_metrics(log, "ENS", metrics_ens)
+                    # Threshold
+                    if INFERENCE_PARAMS['fixed_threshold'] is not None:
+                        optimal_thresh = INFERENCE_PARAMS['fixed_threshold']
                     else:
-                        if args.mode == 'evaluate':
-                            log.info("SWA model not found, skipping SWA/Ensemble.")
+                        optimal_thresh = find_optimal_threshold(model_best, val_loader)
 
-                # 4. Select Final Metrics
-                selected_mode = INFERENCE_PARAMS['inference_mode']
-                final_metrics = metrics_best  # Default fallback
+                    target_mode = INFERENCE_PARAMS['inference_mode']
 
-                if selected_mode == 'swa' and metrics_swa:
-                    final_metrics = metrics_swa
-                elif selected_mode == 'ensemble' and metrics_ens:
-                    final_metrics = metrics_ens
+                    # A. Evaluate BEST
+                    dir_for_best = fold_output_dir if target_mode == 'none' else None
 
-                log.info(
-                    f"Repeat {repeat_idx + 1} | Fold {k + 1} -> Final ({selected_mode.upper()}) F1: {final_metrics['F1-score']:.4f}")
+                    metrics_best = compute_event_based_metrics(
+                        model_best, test_loader, optimal_thresh,
+                        f"{test_subject_id[0]}_best", dir_for_best
+                    )
+                    log_metrics(log, "BEST", metrics_best)
 
-                # Save metrics for summary
-                for key, value in final_metrics.items():
-                    repeat_metrics[key].append(value)
+                    # B. Evaluate SWA
+                    model_swa = None
+                    if USE_SWA:
+                        swa_path = os.path.join(fold_output_dir, 'unet_model_swa.pth')
+                        if os.path.exists(swa_path):
+                            model_swa = GatedUNet(num_channels, dropout_rate=0.0).to(device)
+                            model_swa.load_state_dict(torch.load(swa_path, map_location=device))
 
-                # Cleanup
-                del model_best
-                if model_swa: del model_swa
-                torch.cuda.empty_cache()
-                gc.collect()
+                            dir_for_swa = fold_output_dir if target_mode == 'swa' else None
 
-            except Exception as e:
-                log.error(f"Error during evaluation of {test_subject_id[0]}: {e}")
-                import traceback
+                            metrics_swa = compute_event_based_metrics(
+                                model_swa, test_loader, optimal_thresh,
+                                f"{test_subject_id[0]}_swa", dir_for_swa
+                            )
+                            log_metrics(log, "SWA", metrics_swa)
 
-                traceback.print_exc()
+                            # C. Evaluate ENSEMBLE
+                            ensemble_model = EnsembleWrapper(model_best, model_swa).to(device)
+
+                            dir_for_ens = fold_output_dir if target_mode == 'ensemble' else None
+
+                            metrics_ens = compute_event_based_metrics(
+                                ensemble_model, test_loader, optimal_thresh,
+                                f"{test_subject_id[0]}_ens", dir_for_ens
+                            )
+                            log_metrics(log, "ENS", metrics_ens)
+                        else:
+                            if args.mode == 'evaluate':
+                                log.info("SWA model not found, skipping SWA/Ensemble.")
+
+                        # 4. Select Final Metrics
+                        selected_mode = INFERENCE_PARAMS['inference_mode']
+                        final_metrics = metrics_best  # Default fallback
+
+                        if selected_mode == 'swa' and metrics_swa:
+                            final_metrics = metrics_swa
+                        elif selected_mode == 'ensemble' and metrics_ens:
+                            final_metrics = metrics_ens
+
+                        log.info(
+                            f"Repeat {repeat_idx + 1} | Fold {k + 1} -> Final ({selected_mode.upper()}) F1: {final_metrics['F1-score']:.4f}")
+
+                        # Save metrics for summary
+                        for key, value in final_metrics.items():
+                            repeat_metrics[key].append(value)
+
+                        # Cleanup
+                        del model_best
+                        if model_swa: del model_swa
+                        torch.cuda.empty_cache()
+                        gc.collect()
+
+                except Exception as e:
+                    log.error(f"Error during evaluation of {test_subject_id[0]}: {e}")
+                    import traceback
+                    traceback.print_exc()
 
         # REPEAT SUMMARY
-        log.info(f"\n--- SUMMARY FOR REPEAT {repeat_idx + 1}")
-        if len(repeat_metrics) > 0:
-            for key, values in repeat_metrics.items():
-                mean_val = np.mean(values)
-                log.info(f"{key:<15}: {mean_val:.4f}")
-                grand_results[key].append(mean_val)
-        else:
-            log.warning("No metrics collected for this repeat.")
+        summary_updates = aggregate_and_save_summary(
+            repeat_metrics=repeat_metrics,
+            output_dir=run_output_dir,
+            repeat_idx=repeat_idx,
+            seed=current_seed,
+            logger=log
+        )
 
-    log.info(f"FINAL EXPERIMENT RESULTS OVER {args.repeats} REPEATS")
+        for key, val in summary_updates.items():
+            grand_results[key].append(val)
 
-    if len(grand_results) > 0:
-        log.info(f"{'Metric':<15} {'Mean':<10} {'Std Dev':<10}")
-        for key, values in grand_results.items():
-            mean = np.mean(values)
-            std = np.std(values)
-            log.info(f"{key:<15} {mean:.4f}     (± {std:.4f})")
-
-    log.info(f"Experiment log saved to: {master_output_dir}")
+    save_final_experiment_summary(
+        grand_results=grand_results,
+        output_dir=master_output_dir,
+        total_repeats=args.repeats,
+        timestamp=timestamp if args.mode == 'train' else "evaluation_run",
+        logger=log
+    )
 
     logging.shutdown()
     log_dir = "logs"
@@ -333,6 +341,6 @@ if __name__ == "__main__":
     if os.path.exists(source_log_path):
         try:
             shutil.copy2(source_log_path, target_log_path)
-            print(f"--> LOG FILE COPIED SUCCESSFULLY FROM {source_log_path} TO: {target_log_path}")
+            print(f"Training log file copied from {source_log_path} to: {target_log_path}")
         except Exception as e:
-            print(f"--> WARNING: Could not move log file. It remains at {source_log_path}. Error: {e}")
+            print(f"Could not move training log file. It remains at {source_log_path}. Error: {e}")

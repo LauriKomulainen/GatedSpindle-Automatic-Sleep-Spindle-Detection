@@ -3,10 +3,10 @@
 import torch
 import numpy as np
 import os
-from torch.utils.data import Dataset, DataLoader, ConcatDataset, Subset
+from torch.utils.data import Dataset, DataLoader, ConcatDataset
 import logging
 import random
-from configs.dreams_config import DATA_PARAMS, METRIC_PARAMS
+from configs.dreams_config import DATA_PARAMS
 from preprocessing.normalization import normalize_data
 from preprocessing.bandpassfilter import apply_bandpass_filter
 from scipy.signal import hilbert
@@ -30,18 +30,18 @@ def compute_input_channels(raw_signal_np, fs):
     ch2 = torch.tensor(sigma_signal.copy(), dtype=torch.float32).unsqueeze(0)
     channels.append(ch2)
 
-    # CH3: Delta (0.4 - 4 Hz)
-    #delta_signal = apply_bandpass_filter(raw_signal_np, fs, 0.4, 4.0, order=4)
-    #delta_signal = normalize_data(delta_signal)
-    #ch3 = torch.tensor(delta_signal.copy(), dtype=torch.float32).unsqueeze(0)
-    #channels.append(ch3)
-
-    # CH4: Hilbert Envelope
+    # CH3: Hilbert Envelope
     analytic_signal = hilbert(sigma_signal)
     amplitude_envelope = np.abs(analytic_signal)
     env_norm = normalize_data(amplitude_envelope)
     ch4 = torch.tensor(env_norm.copy(), dtype=torch.float32).unsqueeze(0)
     channels.append(ch4)
+
+    # CH4: Delta (0.4 - 4 Hz)
+    #delta_signal = apply_bandpass_filter(raw_signal_np, fs, 0.4, 4.0, order=4)
+    #delta_signal = normalize_data(delta_signal)
+    #ch3 = torch.tensor(delta_signal.copy(), dtype=torch.float32).unsqueeze(0)
+    #channels.append(ch3)
 
     # CH5:
 

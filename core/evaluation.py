@@ -8,11 +8,111 @@ import os
 import json
 from tqdm import tqdm
 from typing import Dict
-from configs.dreams_config import METRIC_PARAMS, DATA_PARAMS, POST_PROCESSING_PARAMS
+from configs.dreams_config import METRIC_PARAMS, DATA_PARAMS, POST_PROCESSING_PARAMS, INFERENCE_PARAMS
 from postprocessing.postprocessing import stitch_predictions_1d, find_events_dual_thresh, calculate_iou
 from utils.reporting import generate_detailed_csv
 
 log = logging.getLogger(__name__)
+
+
+def aggregate_and_save_summary(repeat_metrics: Dict[str, list],
+                               output_dir: str,
+                               repeat_idx: int,
+                               seed: int,
+                               logger=None):
+    """
+    Calculates mean/std across folds for a repeat and saves to JSON.
+    """
+    summary_stats = {
+        "repeat_index": repeat_idx + 1,
+        "seed": seed,
+        "metrics": {}
+    }
+
+    if logger is None:
+        logger = log
+
+    logger.info(f"Summary for repeat: {repeat_idx + 1}")
+
+    grand_results_update = {}
+
+    if len(repeat_metrics) > 0:
+        for key, values in repeat_metrics.items():
+            mean_val = np.mean(values)
+            std_val = np.std(values)
+
+            logger.info(f"{key:<15}: {mean_val:.4f} (± {std_val:.4f})")
+
+            grand_results_update[key] = mean_val
+
+            summary_stats["metrics"][key] = {
+                "mean": float(mean_val)
+            }
+
+        try:
+            json_filename = f"summary_repeat_{repeat_idx + 1}.json"
+            json_path = os.path.join(output_dir, json_filename)
+
+            with open(json_path, 'w') as f:
+                json.dump(summary_stats, f, indent=4)
+
+            logger.info(f"Saved repeat summary JSON to: {json_path}")
+
+        except Exception as e:
+            logger.error(f"Failed to save summary JSON: {e}")
+
+    else:
+        logger.warning("No metrics collected for this repeat.")
+
+    return grand_results_update
+
+
+def save_final_experiment_summary(grand_results: Dict[str, list],
+                                  output_dir: str,
+                                  total_repeats: int,
+                                  timestamp: str,
+                                  logger=None):
+    """
+    Calculates final mean/std across all repeats, logs the results table,
+    and saves the final experiment summary JSON.
+    """
+    if logger is None:
+        logger = log
+
+    logger.info(f"FINAL EXPERIMENT RESULTS OVER {total_repeats} REPEATS")
+
+    final_summary_data = {
+        "experiment_timestamp": timestamp,
+        "total_repeats": total_repeats,
+        "metrics": {}
+    }
+
+    if len(grand_results) > 0:
+        logger.info(f"{'Metric':<15} {'Mean':<10} {'Std Dev':<10}")
+
+        for key, values in grand_results.items():
+            mean_val = np.mean(values)
+            std_val = np.std(values)
+
+            logger.info(f"{key:<15} {mean_val:.4f} (± {std_val:.4f})")
+
+            final_summary_data["metrics"][key] = {
+                "mean": float(mean_val),
+                "std": float(std_val)
+            }
+
+        try:
+            final_json_path = os.path.join(output_dir, "final_experiment_summary.json")
+            with open(final_json_path, 'w') as f:
+                json.dump(final_summary_data, f, indent=4)
+
+            logger.info(f"Saved final experiment summary to: {final_json_path}")
+
+        except Exception as e:
+            logger.error(f"Failed to save final summary JSON: {e}")
+    else:
+        logger.warning("No grand results collected.")
+
 
 def compute_event_based_metrics(model,
                                 data_loader,
@@ -20,6 +120,7 @@ def compute_event_based_metrics(model,
                                 subject_id: str = "unknown",
                                 output_dir: str = ".") -> Dict[str, float]:
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+
     if torch.backends.mps.is_available(): device = torch.device('mps')
     model.to(device)
     model.eval()
@@ -71,11 +172,13 @@ def compute_event_based_metrics(model,
     )
 
     log.info(f"Found {len(true_events)} true, {len(pred_events)} predicted.")
+    save_error_analysis = INFERENCE_PARAMS['save_error_analysis']
 
-    try:
-        generate_detailed_csv(true_events, pred_events, raw_1d, prob_1d, fs, subject_id, output_dir)
-    except Exception as e:
-        log.error(f"CSV gen error: {e}")
+    if save_error_analysis and output_dir:
+        try:
+            generate_detailed_csv(true_events, pred_events, raw_1d, prob_1d, fs, subject_id, output_dir)
+        except Exception as e:
+            log.error(f"CSV gen error: {e}")
 
     # Metrics calculation
     tp = 0
@@ -93,11 +196,21 @@ def compute_event_based_metrics(model,
             matched.add(best_idx)
             iou_scores.append(best_iou)
 
-    fp = len(pred_events) - tp
-    fn = len(true_events) - tp
     eps = 1e-6
+
+    # Calculate false postives
+    fp = len(pred_events) - tp
+
+    # Calculate false negatives
+    fn = len(true_events) - tp
+
+    # Calculate precision
     prec = tp / (tp + fp + eps)
+
+    # Calculate recall
     rec = tp / (tp + fn + eps)
+
+    # Calculate F1-score
     f1 = 2 * (prec * rec) / (prec + rec + eps)
 
     try:
@@ -129,7 +242,7 @@ def compute_event_based_metrics(model,
         log.error(f"Failed to save JSON stats for {subject_id}: {e}")
 
     return {"F1-score": f1, "Precision": prec, "Recall": rec, "TP (events)": tp, "FP (events)": fp, "FN (events)": fn,
-            "mIoU (TPs)": np.mean(iou_scores) if iou_scores else 0.0}
+            "mIoU: ": np.mean(iou_scores) if iou_scores else 0.0}
 
 
 def find_optimal_threshold(model, val_loader) -> float:

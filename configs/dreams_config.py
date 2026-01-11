@@ -47,6 +47,7 @@ METRIC_PARAMS = {
 INFERENCE_PARAMS = {
     'fixed_threshold': 0.7,
     'inference_mode': 'ensemble', # Options: none (best), swa, ensemble
+    'save_error_analysis': False,
 }
 
 POST_PROCESSING_PARAMS = {

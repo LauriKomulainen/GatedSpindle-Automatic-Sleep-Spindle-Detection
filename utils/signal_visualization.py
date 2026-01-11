@@ -13,9 +13,6 @@ log = logging.getLogger(__name__)
 
 WINDOW_SEC = DATA_PARAMS['window_sec']
 
-
-# utils/signal_visualization.py
-
 def save_model_input_examples(x_data, y_data, raw_windows, subject_id, save_dir,
                               n_examples=2, fs=100, channel_names=None):
     save_dir = Path(save_dir) / "Model_input_examples"
@@ -46,7 +43,6 @@ def save_model_input_examples(x_data, y_data, raw_windows, subject_id, save_dir,
         # 3. Plot channels
         fig, axs = plt.subplots(n_channels + 1, 1, figsize=(10, 3 * (n_channels + 1)), sharex=True)
 
-        # Otsikko
         fig.suptitle(f"Subject {subject_id} - Window {idx}", fontsize=16)
 
         # Row 0: Raw Signal (context)
