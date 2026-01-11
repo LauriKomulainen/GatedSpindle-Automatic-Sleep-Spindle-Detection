@@ -123,13 +123,13 @@ This experiment evaluates the stability of the model across different random ini
 
 The initial random seed is selected uniformly at random from the range **1–99,999**. After each complete LOSO iteration, the seed is incremented by one. This process is repeated until a total of three (--repeats 3) LOSO runs are completed. To reproduce the reported results, execute the following command:
 ```bash
-python main.py --mode train --repeats 3 --seed 51143
+python main.py --mode train --repeats 3 --seed 28273
 ```
 Average performance of 3 runs (No shuffle):
-* F1-score: 0.7920 ± 0.0140
-* Precision: 0.7902 ± 0.0133
-* Recall: 0.7983 ± 0.0212
-* mIoU: 0.7933 ± 0.0074
+* F1-score: 0.8012 ± 0.0082
+* Precision: 0.7993 ± 0.0114
+* Recall: 0.8124 ± 0.0081
+* mIoU: 0.7942 ± 0.0033
 
 For non-deterministic verification runs, the `--seed` argument may be omitted. When unspecified, the initial seed is sampled uniformly at random from **1–99,999**, and subsequently incremented by one after each complete LOSO cycle.
 ```bash
@@ -153,16 +153,10 @@ This experiment reports the performance of a single deterministic Leave-One-Subj
 
 The model is trained and evaluated using a fixed random seed (`seed = 1`) and a single LOSO
 cycle (`--repeats 1`). Unlike the standard benchmark, this experiment does not assess
-stability across random initializations. To reproduce the reported results, execute the following command:
+stability across random initializations.
 ```bash
 python main.py
 ```
-
-Average performance of 1 run (fixed seed):
-* F1-score: 0.8199 
-* Precision: 0.7852 
-* Recall: 0.8615 
-* mIoU: 0.7800
 
 ## License & Citation
 This project is open-source and available under the MIT License (see the LICENSE file for details). You are free to use, modify, and distribute this software for research and development purposes.

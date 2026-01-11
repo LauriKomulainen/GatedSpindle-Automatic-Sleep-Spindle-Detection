@@ -2,7 +2,7 @@
 
 # --- Data & Preprocessing Parameters ---
 DATA_PARAMS = {
-    'fs': 200.0, #250
+    'fs': 200.0,
     'window_sec': 5.0,
     'overlap_sec': 2.5,
     'lowcut': 0.3,
@@ -45,7 +45,7 @@ METRIC_PARAMS = {
 }
 
 INFERENCE_PARAMS = {
-    'fixed_threshold': 0.75,
+    'fixed_threshold': 0.7,
     'inference_mode': 'ensemble', # Options: none (best), swa, ensemble
 }
 

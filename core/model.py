@@ -131,10 +131,10 @@ class GatedUNet(nn.Module):
         super(GatedUNet, self).__init__()
 
         # Input normalization (2-channel input)
-        self.input_norm = nn.InstanceNorm1d(2, affine=True)
+        self.input_norm = nn.InstanceNorm1d(3, affine=True)
 
         # Encoder
-        self.enc1 = ConvBlock(2, 32)
+        self.enc1 = ConvBlock(3, 32)
         self.pool1 = nn.MaxPool1d(2)
         self.drop1 = nn.Dropout(dropout_rate)
 
