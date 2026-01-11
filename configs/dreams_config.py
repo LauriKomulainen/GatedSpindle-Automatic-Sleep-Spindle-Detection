@@ -9,7 +9,7 @@ DATA_PARAMS = {
     'highcut': 30.0,
     'filter_order': 4,
     'use_instance_norm': True,
-    'included_stages': [2, 1, 0], #N2+N3
+    'included_stages': [2, 1, 0], # 2,1,0 equals for N2+N3
     'hypnogram_resolution_sec': 5.0,
 
     # --- SUBJECT SELECTION ---
@@ -52,4 +52,8 @@ INFERENCE_PARAMS = {
 POST_PROCESSING_PARAMS = {
     'gap_thresh_sec': 0.3,
     'fixed_border_thresh': 0.15,
+}
+
+SIGNAL_VISUALIZATION_PARAMS = {
+    'channel_names': ["EEG (0.3-30Hz)", "Sigma (11-16Hz)", "Hilbert Envelope"]
 }

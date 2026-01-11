@@ -36,7 +36,7 @@ def set_seed(seed):
     print(f"Random Seed set to: {seed}")
 
 
-# --- Helper Class for Ensemble ---
+# Helper Class for Ensemble
 class EnsembleWrapper(nn.Module):
     def __init__(self, model_a, model_b):
         super().__init__()
@@ -187,13 +187,23 @@ if __name__ == "__main__":
                     val_subject_ids=val_subject_id,
                     test_subject_ids=test_subject_id,
                 )
+
+                if len(val_loader) > 0:
+                    first_sample_data = val_loader.dataset[0][0]
+                else:
+                    first_sample_data = train_loader.dataset[0][0]
+
+                num_channels = first_sample_data.shape[0]
+
+                log.info(f"Detected input channels from data: {num_channels}")
+
             except Exception as e:
                 log.error(f"Data loading failed: {e}")
                 continue
 
             # 2. Train (ONLY IF MODE IS TRAIN)
             if args.mode == 'train':
-                model = GatedUNet(dropout_rate=params['dropout_rate'])
+                model = GatedUNet(num_channels, dropout_rate=params['dropout_rate'])
                 train_model(
                     model=model,
                     train_loader=train_loader,
@@ -209,7 +219,7 @@ if __name__ == "__main__":
                 del model
                 torch.cuda.empty_cache()
 
-            # --- 3. Evaluation (Common logic for both Train & Evaluate) ---
+            # 3. Evaluation (Common logic for both Train & Evaluate)
             metrics_best = None
             metrics_swa = None
             metrics_ens = None
@@ -224,7 +234,7 @@ if __name__ == "__main__":
                 continue
 
             try:
-                model_best = GatedUNet(dropout_rate=0.0).to(device)
+                model_best = GatedUNet(num_channels, dropout_rate=0.0).to(device)
                 model_best.load_state_dict(torch.load(best_path, map_location=device))
                 log.info(f"Loaded model from {best_path}")
 
@@ -246,7 +256,7 @@ if __name__ == "__main__":
                 if USE_SWA:
                     swa_path = os.path.join(fold_output_dir, 'unet_model_swa.pth')
                     if os.path.exists(swa_path):
-                        model_swa = GatedUNet(dropout_rate=0.0).to(device)
+                        model_swa = GatedUNet(num_channels, dropout_rate=0.0).to(device)
                         model_swa.load_state_dict(torch.load(swa_path, map_location=device))
 
                         metrics_swa = compute_event_based_metrics(

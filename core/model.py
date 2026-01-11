@@ -127,14 +127,14 @@ class GatedUNet(nn.Module):
     - Instance normalization and ReLU non-linearities throughout the network
     - A two-layer MLP gating head (256→64→1) operating on globally pooled bottleneck features
     """
-    def __init__(self, dropout_rate=0.2):
+    def __init__(self, features, dropout_rate=0.2):
         super(GatedUNet, self).__init__()
 
         # Input normalization (2-channel input)
-        self.input_norm = nn.InstanceNorm1d(3, affine=True)
+        self.input_norm = nn.InstanceNorm1d(features, affine=True)
 
         # Encoder
-        self.enc1 = ConvBlock(3, 32)
+        self.enc1 = ConvBlock(features, 32)
         self.pool1 = nn.MaxPool1d(2)
         self.drop1 = nn.Dropout(dropout_rate)
 

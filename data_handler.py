@@ -9,11 +9,11 @@ import json
 import matplotlib.pyplot as plt
 from scipy.ndimage import label
 from utils.logger import setup_logging
-from configs.dreams_config import DATA_PARAMS
+from configs.dreams_config import DATA_PARAMS, SIGNAL_VISUALIZATION_PARAMS
 from preprocessing import bandpassfilter, normalization
 from data_loaders import dreams_loader
 import paths
-from utils.signal_visualization import save_three_channel_examples
+from utils.signal_visualization import save_model_input_examples
 
 setup_logging("data_handler.log")
 log = logging.getLogger(__name__)
@@ -31,6 +31,7 @@ OVERLAP_SEC = DATA_PARAMS['overlap_sec']
 USE_INSTANCE_NORM = DATA_PARAMS['use_instance_norm']
 INCLUDED_STAGES = DATA_PARAMS['included_stages']
 HYPNO_RES = DATA_PARAMS['hypnogram_resolution_sec']
+
 
 def load_hypnogram(txt_dir: Path, subject_id: str):
     hypno_file = txt_dir / f"Hypnogram_{subject_id}.txt"
@@ -339,7 +340,20 @@ def main():
 
         log.info(f"Final 1D data shape. X: {x_windows.shape}, Y: {y_masks.shape}")
 
-        save_three_channel_examples(x_windows, y_masks, x_raw_windows, patient_id, PLOTS_DIR, fs=fs)
+        channel_names = SIGNAL_VISUALIZATION_PARAMS['channel_names']
+        try:
+            save_model_input_examples(
+                x_data=x_windows,
+                y_data=y_masks,
+                raw_windows=x_raw_windows,
+                subject_id=patient_id,
+                save_dir=PLOTS_DIR,
+                fs=fs,
+                n_examples=2,
+                channel_names=channel_names
+            )
+        except Exception as e:
+            log.warning(f"Could not save input examples for {patient_id}. Error: {e}")
 
         x_path = PROCESSED_DATA_DIR / f"{patient_id}_X_1D.npy"
         y_path = PROCESSED_DATA_DIR / f"{patient_id}_Y_1D.npy"

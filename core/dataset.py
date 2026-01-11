@@ -13,6 +13,44 @@ from scipy.signal import hilbert
 
 log = logging.getLogger(__name__)
 
+
+def compute_input_channels(raw_signal_np, fs):
+    """
+    Computes input channels
+    """
+    channels = []
+
+    # CH1: Raw EEG
+    ch1 = torch.tensor(raw_signal_np, dtype=torch.float32).unsqueeze(0)
+    channels.append(ch1)
+
+    # CH2: Sigma (11-16 Hz)
+    sigma_signal = apply_bandpass_filter(raw_signal_np, fs, 11, 16, order=4)
+    sigma_signal = normalize_data(sigma_signal)
+    ch2 = torch.tensor(sigma_signal.copy(), dtype=torch.float32).unsqueeze(0)
+    channels.append(ch2)
+
+    # CH3: Delta (0.4 - 4 Hz)
+    #delta_signal = apply_bandpass_filter(raw_signal_np, fs, 0.4, 4.0, order=4)
+    #delta_signal = normalize_data(delta_signal)
+    #ch3 = torch.tensor(delta_signal.copy(), dtype=torch.float32).unsqueeze(0)
+    #channels.append(ch3)
+
+    # CH4: Hilbert Envelope
+    analytic_signal = hilbert(sigma_signal)
+    amplitude_envelope = np.abs(analytic_signal)
+    env_norm = normalize_data(amplitude_envelope)
+    ch4 = torch.tensor(env_norm.copy(), dtype=torch.float32).unsqueeze(0)
+    channels.append(ch4)
+
+    # CH5:
+
+    # CH6 etc..
+
+    # Return channels
+    return torch.cat(channels, dim=0)
+
+
 class RandomAugment1D:
     def __init__(self, p=0.5):
         self.p = p
@@ -33,41 +71,18 @@ class SpindleDataset(Dataset):
         self.fs = DATA_PARAMS['fs']
         self.augment = augment
         self.augmentor = RandomAugment1D(p=0.5)
-        self.use_instance_norm = DATA_PARAMS.get('use_instance_norm', True)
-        self.low_f = METRIC_PARAMS['spindle_freq_low']
-        self.high_f = METRIC_PARAMS['spindle_freq_high']
 
     def __len__(self):
         return self.length
 
     def __getitem__(self, idx):
         bandpass_filtered_signal = np.array(self.x_mmap[idx], dtype=np.float32)
-
-        # CH1: Raw EEG
-        ch1 = torch.tensor(bandpass_filtered_signal, dtype=torch.float32).unsqueeze(0)
-
-        # CH2: Sigma (11-16 Hz)
-        sigma_signal = apply_bandpass_filter(bandpass_filtered_signal, self.fs, 11, 16, order=4)
-        sigma_signal = normalize_data(sigma_signal)  # Tärkeä!
-        ch2 = torch.tensor(sigma_signal.copy(), dtype=torch.float32).unsqueeze(0)
-
-        # CH3: Delta (0.4 - 4 Hz)
-        delta_signal = apply_bandpass_filter(bandpass_filtered_signal, self.fs, 0.4, 4.0, order=4)
-        delta_signal = normalize_data(delta_signal)
-        ch3 = torch.tensor(delta_signal.copy(), dtype=torch.float32).unsqueeze(0)
-
-        analytic_signal = hilbert(sigma_signal)
-        amplitude_envelope = np.abs(analytic_signal)
-        env_norm = normalize_data(amplitude_envelope)
-        ch4 = torch.tensor(env_norm.copy(), dtype=torch.float32).unsqueeze(0)
-
-        # Yhdistetään: Nyt shape on [3, seq_len]
-        signal_tensor = torch.cat([ch1, ch2, ch4], dim=0)
+        signal_tensor = compute_input_channels(bandpass_filtered_signal, self.fs)
 
         if self.augment:
             signal_tensor = self.augmentor(signal_tensor)
 
-        # LABEL LOADING (HARD LABELS)
+        # Label loading
         mask_1d = np.array(self.y_mmap[idx], dtype=np.float32)
         mask_tensor = torch.tensor(mask_1d, dtype=torch.float32)
 
@@ -80,10 +95,6 @@ class SpindleDataset(Dataset):
 
 def get_dataloaders(processed_data_dir: str, batch_size: int, train_subject_ids: list, val_subject_ids: list,
                     test_subject_ids: list):
-    if not os.path.exists(processed_data_dir):
-        log.error(f"CRITICAL: Data directory not found: {processed_data_dir}")
-        empty = DataLoader([], batch_size=batch_size)
-        return empty, empty, empty
 
     log.info(f"Training data: {train_subject_ids}")
     log.info(f"Validation data: {val_subject_ids}")
