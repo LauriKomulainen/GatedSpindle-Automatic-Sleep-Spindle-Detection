@@ -13,11 +13,12 @@ The pipeline processes raw EEG signals as follows:
 
 ### 2. Model Inputs
 The model operates on fixed-length 1D EEG segments extracted from preprocessed recordings.
-Each input sample corresponds to a **5-second window** and consists of a two-channel
+Each input sample corresponds to a **5-second window** and consists of a three-channel
 time-series representation:
 
 * Channel 1: Bandpass-filtered raw EEG signal (0.3–30 Hz). 
 * Channel 2: Sigma-band EEG signal (11–16 Hz), extracted using a 4th-order Butterworth filter.
+* Channel 3: Hilbert Envelope from Sigma-band
 
 Independent robust Z-score normalization is applied per 5-second window using
 the median and interquartile range (IQR). To reduce the influence of high-amplitude signal excursions,
@@ -50,10 +51,8 @@ The ensemble is implemented by averaging the raw **logits** (pre-activation outp
 │   └── evaluation.py           # Event-based metrics
 │
 ├── data_loaders/
-│   ├── base_loader.py          # TBD
 │   ├── dreams_loader.py        # Parsers for DREAMS .edf signals and .txt annotations
-│   ├── mass_loader.py          # TBD        
-│   └── user_data_loader.py     # TBD
+│   └── mass_loader.py          # TBD
 │
 ├── postprocessing/         
 │   └── postprocessing.py       # Dual-threshold event detection, merging logic, and window stitching
@@ -68,9 +67,9 @@ The ensemble is implemented by averaging the raw **logits** (pre-activation outp
 │   └── signal_visualization.py # Plots RAW signal & input signals for model
 │
 ├── main.py                     # Orchestrator for LOSO cross-validation, training, and inference
-├── data_handler.py             # Offline preprocessing: converts raw EDFs to optimized .npy tensors
+├── build_dataset.py            # Offline preprocessing: converts raw EDFs to optimized .npy tensors
 ├── plot_results.py             # Visualization tool for performance charts
-└── paths.py                    # Global path definitions
+└── paths.py                    # Global path definitions & which dataset is used (DREAMS or MASS)
 ```
 
 ## Usage Instructions
@@ -104,7 +103,7 @@ Pip install -r requirements.txt
 
 Before training, the raw EEG data must be converted into processed tensors (.npy format).
 ```bash
-python data_handler.py
+python build_dataset.py
 ```
 * This script performs bandpass filtering (0.3-30Hz), segmentation, and Z-score normalization.
 * Processed files are saved to the data/processed directory (defined in paths.py).
@@ -126,37 +125,33 @@ The initial random seed is selected uniformly at random from the range **1–99,
 python main.py --mode train --repeats 3 --seed 28273
 ```
 Average performance of 3 runs (No shuffle):
-* F1-score: 0.8012 ± 0.0082
-* Precision: 0.7993 ± 0.0114
-* Recall: 0.8124 ± 0.0081
-* mIoU: 0.7942 ± 0.0033
+* F1-score: 0.807 ± 0.007
+* Precision: 0.811 ± 0.011
+* Recall: 0.810 ± 0.005
+* mIoU: 0.746 ± 0.004
 
 For non-deterministic verification runs, the `--seed` argument may be omitted. When unspecified, the initial seed is sampled uniformly at random from **1–99,999**, and subsequently incremented by one after each complete LOSO cycle.
 ```bash
 python main.py --mode train --repeats 3 --seed
 ```
 
-### 2. Robustness test (With training fold shuffling)
-This experiment tests the model's ability to generalize across different subject combinations. By shuffling the validation subjects for each repeat (ensure the performance is not biased toward a specific subject pairing).
-```bash
-python main.py --mode train --repeats 3 --seed 51143 --shuffle_folds
-```
-Average performance of 3 runs (With training fold shuffling):
-* F1-score: 0.7770 ± 0.0143
-* Precision: 0.7651 ± 0.0476
-* Recall: 0.8119 ± 0.0290
-* mIoU: 0.7994 ± 0.0054
-
-### 3. Reference Single-Run Performance (Seed = 1)
+### 2. Reference Single-Run Performance (Seed = 28273)
 
 This experiment reports the performance of a single deterministic Leave-One-Subject-Out (LOSO) run using a fixed random initialization.
 
-The model is trained and evaluated using a fixed random seed (`seed = 1`) and a single LOSO
+The model is trained and evaluated using a fixed random seed (`seed = 28273`) and a single LOSO
 cycle (`--repeats 1`). Unlike the standard benchmark, this experiment does not assess
 stability across random initializations.
 ```bash
-python main.py
+python main.py --mode train --repeats 1 --seed 28273
 ```
+
+Best performance from single run:
+* F1-score: 0.816 ± 0.026
+* Precision: 0.821 ± 0.037
+* Recall: 0.814 ± 0.048
+* mIoU: 0.749 ± 0.040
+
 
 ## License & Citation
 This project is open-source and available under the MIT License (see the LICENSE file for details). You are free to use, modify, and distribute this software for research and development purposes.

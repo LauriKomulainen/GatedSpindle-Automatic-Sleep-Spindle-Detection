@@ -8,8 +8,8 @@ DATA_PARAMS = {
     'lowcut': 0.3,
     'highcut': 30.0,
     'filter_order': 4,
-    'use_instance_norm': True,
-    'included_stages': [2, 1, 0], # 2,1,0 equals for N2+N3
+    'use_instance_norm': True, # Windows are processed on-the-fly during the training when True
+    'included_stages': [2, 1, 0], # In DREAMS dataset: Stages 2, 1 and 0 equals for N2 & N3 sleep stages
     'hypnogram_resolution_sec': 5.0,
 
     # --- SUBJECT SELECTION ---
@@ -33,7 +33,7 @@ TRAINING_PARAMS = {
 
 CV_CONFIG = {
     'folds_to_run': None
-    #'folds_to_run': [3]
+    #'folds_to_run': [2,3]
 }
 
 METRIC_PARAMS = {
@@ -41,20 +41,19 @@ METRIC_PARAMS = {
     'spindle_freq_high': 16.0,
     'iou_threshold': 0.2,
     'min_duration_sec': 0.5,
-    'max_duration_sec': 3.0
 }
 
 INFERENCE_PARAMS = {
-    'fixed_threshold': 0.7,
+    'fixed_threshold': 0.75,
     'inference_mode': 'ensemble', # Options: none (best), swa, ensemble
     'save_error_analysis': False,
 }
 
 POST_PROCESSING_PARAMS = {
     'gap_thresh_sec': 0.3,
-    'fixed_border_thresh': 0.15,
+    'fixed_border_thresh': 0.01,
 }
 
 SIGNAL_VISUALIZATION_PARAMS = {
-    'channel_names': ["EEG (0.3-30Hz)", "Sigma (11-16Hz)", "Hilbert Envelope"]
+    'channel_names': ["EEG (0.3-35Hz)", "Sigma (11-16Hz)", "Hilbert Envelope"]
 }

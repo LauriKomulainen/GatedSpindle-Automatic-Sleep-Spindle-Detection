@@ -130,7 +130,7 @@ class GatedUNet(nn.Module):
     def __init__(self, features, dropout_rate=0.2):
         super(GatedUNet, self).__init__()
 
-        # Input normalization (2-channel input)
+        # Input normalization
         self.input_norm = nn.InstanceNorm1d(features, affine=True)
 
         # Encoder

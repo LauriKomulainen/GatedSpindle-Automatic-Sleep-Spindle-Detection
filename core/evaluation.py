@@ -22,6 +22,7 @@ def aggregate_and_save_summary(repeat_metrics: Dict[str, list],
                                logger=None):
     """
     Calculates mean/std across folds for a repeat and saves to JSON.
+    Logs only relative metrics (F1, Precision, Recall, IoU), hides raw counts (TP/FP/FN).
     """
     summary_stats = {
         "repeat_index": repeat_idx + 1,
@@ -36,17 +37,21 @@ def aggregate_and_save_summary(repeat_metrics: Dict[str, list],
 
     grand_results_update = {}
 
+    metrics_to_hide_from_log = ["TP (events)", "FP (events)", "FN (events)"]
+
     if len(repeat_metrics) > 0:
         for key, values in repeat_metrics.items():
             mean_val = np.mean(values)
             std_val = np.std(values)
 
-            logger.info(f"{key:<15}: {mean_val:.4f} (± {std_val:.4f})")
+            if key not in metrics_to_hide_from_log:
+                logger.info(f"{key:<15}: {mean_val:.3f} (± {std_val:.3f})")
 
             grand_results_update[key] = mean_val
 
             summary_stats["metrics"][key] = {
-                "mean": float(mean_val)
+                "mean": float(mean_val),
+                "std": float(std_val)
             }
 
         try:
@@ -87,6 +92,8 @@ def save_final_experiment_summary(grand_results: Dict[str, list],
         "metrics": {}
     }
 
+    metrics_to_hide_from_log = ["TP (events)", "FP (events)", "FN (events)"]
+
     if len(grand_results) > 0:
         logger.info(f"{'Metric':<15} {'Mean':<10} {'Std Dev':<10}")
 
@@ -94,7 +101,8 @@ def save_final_experiment_summary(grand_results: Dict[str, list],
             mean_val = np.mean(values)
             std_val = np.std(values)
 
-            logger.info(f"{key:<15} {mean_val:.4f} (± {std_val:.4f})")
+            if key not in metrics_to_hide_from_log:
+                logger.info(f"{key:<15} {mean_val:.3f} (± {std_val:.3f})")
 
             final_summary_data["metrics"][key] = {
                 "mean": float(mean_val),
@@ -196,8 +204,6 @@ def compute_event_based_metrics(model,
             matched.add(best_idx)
             iou_scores.append(best_iou)
 
-    eps = 1e-6
-
     # Calculate false postives
     fp = len(pred_events) - tp
 
@@ -205,13 +211,22 @@ def compute_event_based_metrics(model,
     fn = len(true_events) - tp
 
     # Calculate precision
-    prec = tp / (tp + fp + eps)
+    if (tp + fp) > 0:
+        precision = tp / (tp + fp)
+    else:
+        precision = 0.0
 
     # Calculate recall
-    rec = tp / (tp + fn + eps)
+    if (tp + fn) > 0:
+        recall = tp / (tp + fn)
+    else:
+        recall = 0.0
 
     # Calculate F1-score
-    f1 = 2 * (prec * rec) / (prec + rec + eps)
+    if (precision + recall) > 0:
+        f1 = 2 * precision * recall / (precision + recall)
+    else:
+        f1 = 0.0
 
     try:
         stats_payload = {
@@ -223,9 +238,9 @@ def compute_event_based_metrics(model,
             "fp": int(fp),
             "fn": int(fn),
             "f1": float(f1),
-            "precision": float(prec),
-            "recall": float(rec),
-            "mean_iou": float(np.mean(iou_scores))
+            "precision": float(precision),
+            "recall": float(recall),
+            "mean_iou": float(np.mean(iou_scores)) if iou_scores else 0.0
         }
 
         if output_dir:
@@ -241,7 +256,8 @@ def compute_event_based_metrics(model,
     except Exception as e:
         log.error(f"Failed to save JSON stats for {subject_id}: {e}")
 
-    return {"F1-score": f1, "Precision": prec, "Recall": rec, "TP (events)": tp, "FP (events)": fp, "FN (events)": fn,
+    return {"F1-score": f1, "Precision": precision, "Recall": recall, "TP (events)": tp, "FP (events)": fp,
+            "FN (events)": fn,
             "mIoU: ": np.mean(iou_scores) if iou_scores else 0.0}
 
 

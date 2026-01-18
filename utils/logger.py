@@ -2,30 +2,38 @@
 
 import logging
 import sys
-import os
+from pathlib import Path
 
-LOG_DIR = "logs"
+CURRENT_FILE = Path(__file__).resolve()
+PROJECT_ROOT = CURRENT_FILE.parent.parent  # .../Sleep Spindle Detector/
+LOG_DIR = PROJECT_ROOT / "logs"
+
 LOG_FORMAT = '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 
 def setup_logging(log_file_name: str):
     """
     Configures logging for the entire project.
-    Creates the 'logs' directory if it doesn't exist.
-    Writes to the specified log_file_name.
+    Creates the 'logs' directory in the PROJECT ROOT if it doesn't exist.
     """
     try:
-        os.makedirs(LOG_DIR, exist_ok=True)
+        # Luodaan logs-kansio absoluuttiseen polkuun
+        LOG_DIR.mkdir(parents=True, exist_ok=True)
     except Exception as e:
         print(f"Error creating log directory {LOG_DIR}: {e}")
 
-    # Dynamic path
-    log_file_path = os.path.join(LOG_DIR, log_file_name)
+    # Käsittely: Jos annettu nimi on jo koko polku, käytetään sitä.
+    # Jos se on pelkkä nimi (esim. "plots.log"), yhdistetään se LOG_DIRiin.
+    target_path = Path(log_file_name)
+    if not target_path.is_absolute():
+        log_file_path = LOG_DIR / log_file_name
+    else:
+        log_file_path = target_path
 
     logging.basicConfig(
         level=logging.INFO,
         format=LOG_FORMAT,
         handlers=[
-            logging.FileHandler(log_file_path, mode='w'),
+            logging.FileHandler(str(log_file_path), mode='w'),
             logging.StreamHandler(sys.stdout)
         ],
         force=True

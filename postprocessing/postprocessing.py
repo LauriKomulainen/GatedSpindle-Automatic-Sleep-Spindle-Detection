@@ -24,7 +24,6 @@ def merge_close_events(events: List[Tuple[int, int]], fs: float, gap_thresh_sec)
 def find_events_dual_thresh(prob_1d: np.ndarray, peak_thresh: float, border_thresh: float, fs: float) -> List[
     Tuple[int, int]]:
     min_samples = METRIC_PARAMS['min_duration_sec'] * fs
-    max_samples = METRIC_PARAMS['max_duration_sec'] * fs
     gap_thresh_sec = POST_PROCESSING_PARAMS['gap_thresh_sec']
 
     candidates = (prob_1d > border_thresh).astype(int)
@@ -46,7 +45,7 @@ def find_events_dual_thresh(prob_1d: np.ndarray, peak_thresh: float, border_thre
     final_events = []
     for start, end in merged_events:
         duration = end - start
-        if min_samples <= duration <= max_samples:
+        if min_samples <= duration:
             final_events.append((start, end))
 
     return final_events

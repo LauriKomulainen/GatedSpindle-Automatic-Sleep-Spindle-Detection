@@ -64,6 +64,7 @@ def find_dreams_data_files(raw_data_path: Path) -> List[Dict[str, Any]]:
     log.info(f"Found a total of {len(found_subjects)} processable DREAMS subjects.")
     return found_subjects
 
+
 def _load_dreams_annotations_txt(txt_file_path: Path, sfreq: float) -> mne.Annotations:
     try:
         annotations_data = np.loadtxt(txt_file_path, comments='#', skiprows=0)
@@ -98,7 +99,8 @@ def _load_dreams_annotations_txt(txt_file_path: Path, sfreq: float) -> mne.Annot
 
     return mne.Annotations(onset=onsets, duration=durations, description=descriptions)
 
-def load_dreams_patient_data(patient_file_group: Dict[str, Any], eeg_channel: str = 'C3-A1') -> Optional[mne.io.Raw]:
+
+def load_dreams_patient_data(patient_file_group, eeg_channel: str = 'C3-A1') -> Optional[mne.io.Raw]:
     patient_id = patient_file_group['id']
     log.info(f"Loading data for patient: {patient_id}...")
     try:
@@ -136,3 +138,35 @@ def load_dreams_patient_data(patient_file_group: Dict[str, Any], eeg_channel: st
     except Exception as e:
         log.error(f"Error loading data for {patient_id}: {e}")
         return None
+
+
+def load_dreams_hypnogram(patient_file_group):
+    signal_path = patient_file_group['signal_file']
+    data_dir = signal_path.parent
+    subject_id = patient_file_group['id']
+
+    hypno_file = data_dir / f"Hypnogram_{subject_id}.txt"
+
+    if not hypno_file.exists():
+        log.warning(f"Hypnogram file not found: {hypno_file}")
+        return None
+
+    try:
+        hypno_data = np.loadtxt(hypno_file, dtype=int, skiprows=1)
+    except ValueError:
+        try:
+            hypno_data = np.loadtxt(hypno_file, dtype=int)
+        except Exception as e:
+            log.error(f"Failed to read hypnogram {hypno_file}: {e}")
+            return None
+
+    if hypno_data.ndim > 1:
+        hypno_data = hypno_data.flatten()
+
+    n_epochs = len(hypno_data)
+    res_sec = DATA_PARAMS['hypnogram_resolution_sec']
+    total_duration_min = (n_epochs * res_sec) / 60
+
+    log.info(f"Hypnogram loaded for {subject_id}: {n_epochs} epochs @ {res_sec}s step. Total duration: {total_duration_min:.2f} min")
+
+    return hypno_data

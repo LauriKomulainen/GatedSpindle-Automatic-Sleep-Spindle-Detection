@@ -7,8 +7,8 @@ from torch.utils.data import Dataset, DataLoader, ConcatDataset
 import logging
 import random
 from configs.dreams_config import DATA_PARAMS
-from preprocessing.normalization import normalize_data
-from preprocessing.bandpassfilter import apply_bandpass_filter
+from data_processing.normalization import normalize_data
+from data_processing.bandpassfilter import apply_bandpass_filter
 from scipy.signal import hilbert
 
 log = logging.getLogger(__name__)
@@ -34,18 +34,18 @@ def compute_input_channels(raw_signal_np, fs):
     analytic_signal = hilbert(sigma_signal)
     amplitude_envelope = np.abs(analytic_signal)
     env_norm = normalize_data(amplitude_envelope)
-    ch4 = torch.tensor(env_norm.copy(), dtype=torch.float32).unsqueeze(0)
+    ch3 = torch.tensor(env_norm.copy(), dtype=torch.float32).unsqueeze(0)
+    channels.append(ch3)
+
+    """
+    New channels can be added easily as follows:
+    
+    # CH4: Delta (0.4-4 Hz)
+    delta_channel = apply_bandpass_filter(raw_signal_np, fs, 11, 16, order=4)
+    delta_channel = normalize_data(delta_channel)
+    ch4 = torch.tensor(delta_channel.copy(), dtype=torch.float32).unsqueeze(0)
     channels.append(ch4)
-
-    # CH4: Delta (0.4 - 4 Hz)
-    #delta_signal = apply_bandpass_filter(raw_signal_np, fs, 0.4, 4.0, order=4)
-    #delta_signal = normalize_data(delta_signal)
-    #ch3 = torch.tensor(delta_signal.copy(), dtype=torch.float32).unsqueeze(0)
-    #channels.append(ch3)
-
-    # CH5:
-
-    # CH6 etc..
+    """
 
     # Return channels
     return torch.cat(channels, dim=0)
