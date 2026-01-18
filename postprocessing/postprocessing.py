@@ -3,7 +3,7 @@
 import torch
 import numpy as np
 from typing import List, Tuple
-from configs.dreams_config import METRIC_PARAMS, POST_PROCESSING_PARAMS
+from configs.dreams_config import POST_PROCESSING_PARAMS
 
 def merge_close_events(events: List[Tuple[int, int]], fs: float, gap_thresh_sec) -> List[Tuple[int, int]]:
     if not events: return []
@@ -23,7 +23,7 @@ def merge_close_events(events: List[Tuple[int, int]], fs: float, gap_thresh_sec)
 
 def find_events_dual_thresh(prob_1d: np.ndarray, peak_thresh: float, border_thresh: float, fs: float) -> List[
     Tuple[int, int]]:
-    min_samples = METRIC_PARAMS['min_duration_sec'] * fs
+    min_samples = POST_PROCESSING_PARAMS['min_duration_sec'] * fs
     gap_thresh_sec = POST_PROCESSING_PARAMS['gap_thresh_sec']
 
     candidates = (prob_1d > border_thresh).astype(int)

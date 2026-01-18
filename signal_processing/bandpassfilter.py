@@ -1,4 +1,4 @@
-# data_preprocess/bandpassfilter.py
+# signal_processing/bandpassfilter.py
 
 from scipy.signal import butter, filtfilt
 import logging

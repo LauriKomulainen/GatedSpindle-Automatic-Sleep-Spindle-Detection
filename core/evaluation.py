@@ -8,7 +8,7 @@ import os
 import json
 from tqdm import tqdm
 from typing import Dict
-from configs.dreams_config import METRIC_PARAMS, DATA_PARAMS, POST_PROCESSING_PARAMS, INFERENCE_PARAMS
+from configs.dreams_config import DATA_PARAMS, POST_PROCESSING_PARAMS, INFERENCE_PARAMS
 from postprocessing.postprocessing import stitch_predictions_1d, find_events_dual_thresh, calculate_iou
 from utils.reporting import generate_detailed_csv
 
@@ -84,7 +84,7 @@ def save_final_experiment_summary(grand_results: Dict[str, list],
     if logger is None:
         logger = log
 
-    logger.info(f"FINAL EXPERIMENT RESULTS OVER {total_repeats} REPEATS")
+    logger.info(f"Final experiment results over {total_repeats} repeats.")
 
     final_summary_data = {
         "experiment_timestamp": timestamp,
@@ -199,7 +199,7 @@ def compute_event_based_metrics(model,
             if i in matched: continue
             iou = calculate_iou(p, t)
             if iou > best_iou: best_iou = iou; best_idx = i
-        if best_iou >= METRIC_PARAMS['iou_threshold']:
+        if best_iou >= INFERENCE_PARAMS['iou_threshold']:
             tp += 1
             matched.add(best_idx)
             iou_scores.append(best_iou)

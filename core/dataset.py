@@ -5,64 +5,14 @@ import numpy as np
 import os
 from torch.utils.data import Dataset, DataLoader, ConcatDataset
 import logging
-import random
 from configs.dreams_config import DATA_PARAMS
-from data_processing.normalization import normalize_data
-from data_processing.bandpassfilter import apply_bandpass_filter
-from scipy.signal import hilbert
+from signal_processing.transforms import compute_input_channels, RandomAugment1D
 
 log = logging.getLogger(__name__)
 
 
-def compute_input_channels(raw_signal_np, fs):
-    """
-    Computes input channels
-    """
-    channels = []
-
-    # CH1: Raw EEG
-    ch1 = torch.tensor(raw_signal_np, dtype=torch.float32).unsqueeze(0)
-    channels.append(ch1)
-
-    # CH2: Sigma (11-16 Hz)
-    sigma_signal = apply_bandpass_filter(raw_signal_np, fs, 11, 16, order=4)
-    sigma_signal = normalize_data(sigma_signal)
-    ch2 = torch.tensor(sigma_signal.copy(), dtype=torch.float32).unsqueeze(0)
-    channels.append(ch2)
-
-    # CH3: Hilbert Envelope
-    analytic_signal = hilbert(sigma_signal)
-    amplitude_envelope = np.abs(analytic_signal)
-    env_norm = normalize_data(amplitude_envelope)
-    ch3 = torch.tensor(env_norm.copy(), dtype=torch.float32).unsqueeze(0)
-    channels.append(ch3)
-
-    """
-    New channels can be added easily as follows:
-    
-    # CH4: Delta (0.4-4 Hz)
-    delta_channel = apply_bandpass_filter(raw_signal_np, fs, 11, 16, order=4)
-    delta_channel = normalize_data(delta_channel)
-    ch4 = torch.tensor(delta_channel.copy(), dtype=torch.float32).unsqueeze(0)
-    channels.append(ch4)
-    """
-
-    # Return channels
-    return torch.cat(channels, dim=0)
-
-
-class RandomAugment1D:
-    def __init__(self, p=0.5):
-        self.p = p
-
-    def __call__(self, signal):
-        if random.random() < self.p:
-            gain = random.uniform(0.9, 1.1)
-            signal = signal * gain
-        return signal
-
 class SpindleDataset(Dataset):
-    def __init__(self, x_1d_path, y_1d_path, seq_len=1, augment=False):
+    def __init__(self, x_1d_path, y_1d_path, augment=False):
         self.x_1d_path = x_1d_path
         self.y_path = y_1d_path
         self.x_mmap = np.load(x_1d_path, mmap_mode='r')
@@ -76,8 +26,8 @@ class SpindleDataset(Dataset):
         return self.length
 
     def __getitem__(self, idx):
-        bandpass_filtered_signal = np.array(self.x_mmap[idx], dtype=np.float32)
-        signal_tensor = compute_input_channels(bandpass_filtered_signal, self.fs)
+        raw_signal = np.array(self.x_mmap[idx], dtype=np.float32)
+        signal_tensor = compute_input_channels(raw_signal, self.fs)
 
         if self.augment:
             signal_tensor = self.augmentor(signal_tensor)

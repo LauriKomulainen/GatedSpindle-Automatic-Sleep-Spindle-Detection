@@ -9,7 +9,7 @@ from scipy.ndimage import label, find_objects
 
 # CONFIGS & UTILS
 from utils.logger import setup_logging
-from data_processing import bandpassfilter, normalization
+from signal_processing import bandpassfilter, normalization
 from utils.signal_visualization import save_model_input_examples, plot_eeg_trace
 
 import paths

@@ -4,7 +4,7 @@ import numpy as np
 import pandas as pd
 import os
 from scipy.signal import welch
-from configs.dreams_config import METRIC_PARAMS
+from configs.dreams_config import INFERENCE_PARAMS
 from postprocessing.postprocessing import calculate_iou
 
 def analyze_signal_properties(signal_segment: np.ndarray, fs: float):
@@ -71,7 +71,7 @@ def generate_detailed_csv(true_events, pred_events, raw_signal_1d, probs_1d, fs,
                 best_iou = iou
                 matched_true_idx = t_idx
 
-        if best_iou >= METRIC_PARAMS['iou_threshold']:
+        if best_iou >= INFERENCE_PARAMS['iou_threshold']:
             match_type = "TP"
             if matched_true_idx != -1:
                 matched_true_indices.add(matched_true_idx)

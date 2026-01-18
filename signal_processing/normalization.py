@@ -1,4 +1,4 @@
-# data_preprocess/normalization.py
+# signal_processing/normalization.py
 
 import logging
 import numpy as np

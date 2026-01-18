@@ -57,18 +57,19 @@ The ensemble is implemented by averaging the raw **logits** (pre-activation outp
 ├── postprocessing/         
 │   └── postprocessing.py       # Dual-threshold event detection, merging logic, and window stitching
 │
-├── preprocessing/          
-│   ├── bandpassfilter.py       # Butterworth bandpass filter implementation     
-│   └── normalization.py        # Robust Z-score normalization (IQR-based)
+├── signal_processing/          
+│   ├── bandpassfilter.py       # Butterworth bandpass filter implementation
+│   ├── normalization.py        # Robust Z-score normalization (IQR-based)
+│   └── transforms.py           # Model input channels
 │
 ├── utils/                
 │   ├── logger.py               # Centralized logging configuration
 │   ├── reporting.py            # Generates detailed CSV error analysis and signal stats
+│   ├── plot_results.py         # Visualization tool for performance charts
 │   └── signal_visualization.py # Plots RAW signal & input signals for model
 │
 ├── main.py                     # Orchestrator for LOSO cross-validation, training, and inference
 ├── build_dataset.py            # Offline preprocessing: converts raw EDFs to optimized .npy tensors
-├── plot_results.py             # Visualization tool for performance charts
 └── paths.py                    # Global path definitions & which dataset is used (DREAMS or MASS)
 ```
 

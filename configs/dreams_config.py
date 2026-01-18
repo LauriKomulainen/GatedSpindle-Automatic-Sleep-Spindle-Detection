@@ -1,6 +1,6 @@
 # config.py
 
-# --- Data & Preprocessing Parameters ---
+# Data & Preprocessing Parameters
 DATA_PARAMS = {
     'fs': 200.0,
     'window_sec': 5.0,
@@ -12,14 +12,14 @@ DATA_PARAMS = {
     'included_stages': [2, 1, 0], # In DREAMS dataset: Stages 2, 1 and 0 equals for N2 & N3 sleep stages
     'hypnogram_resolution_sec': 5.0,
 
-    # --- SUBJECT SELECTION ---
+    # SUBJECT SELECTION
     'subjects_list': [
         'excerpt1', 'excerpt2', 'excerpt3', 'excerpt4',
         'excerpt5', 'excerpt6'
     ],
 }
 
-# --- Training Hyperparameters ---
+# Training Hyperparameters
 TRAINING_PARAMS = {
     'batch_size': 16,
     'learning_rate': 1e-4,
@@ -36,20 +36,15 @@ CV_CONFIG = {
     #'folds_to_run': [2,3]
 }
 
-METRIC_PARAMS = {
-    'spindle_freq_low': 11.0,
-    'spindle_freq_high': 16.0,
-    'iou_threshold': 0.2,
-    'min_duration_sec': 0.5,
-}
-
 INFERENCE_PARAMS = {
+    'iou_threshold': 0.2,
     'fixed_threshold': 0.75,
     'inference_mode': 'ensemble', # Options: none (best), swa, ensemble
     'save_error_analysis': False,
 }
 
 POST_PROCESSING_PARAMS = {
+    'min_duration_sec': 0.5,
     'gap_thresh_sec': 0.3,
     'fixed_border_thresh': 0.01,
 }
