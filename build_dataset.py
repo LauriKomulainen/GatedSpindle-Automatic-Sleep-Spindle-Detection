@@ -27,6 +27,7 @@ if SELECTED_DATASET == "DREAMS":
     find_dataset_files = loader_module.find_dreams_data_files
     load_patient_data = loader_module.load_dreams_patient_data
     load_hypnograms = loader_module.load_dreams_hypnogram
+    DATA_DIRECTORY = paths.RAW_DREAMS_DATA_DIR
 
 elif SELECTED_DATASET == "MASS":
     log.info(f"Dataset selected: {SELECTED_DATASET}")
@@ -36,7 +37,7 @@ elif SELECTED_DATASET == "MASS":
     find_dataset_files = loader_module.find_mass_data_files
     load_patient_data = loader_module.load_mass_patient_data
     load_hypnogram = loader_module.load_mass_hypnogram
-
+    DATA_DIRECTORY = paths.RAW_MASS_DATA_DIR
 else:
     raise ValueError(f"Unknown dataset in paths.py: {SELECTED_DATASET}")
 

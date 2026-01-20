@@ -5,8 +5,17 @@ import numpy as np
 import os
 from torch.utils.data import Dataset, DataLoader, ConcatDataset
 import logging
-from configs.dreams_config import DATA_PARAMS
+from paths import SELECTED_DATASET
 from signal_processing.transforms import compute_input_channels, RandomAugment1D
+
+if SELECTED_DATASET == "DREAMS":
+    from configs.dreams_config import (
+        DATA_PARAMS
+    )
+elif SELECTED_DATASET == "MASS":
+    from configs.mass_config import (
+        DATA_PARAMS
+    )
 
 log = logging.getLogger(__name__)
 
