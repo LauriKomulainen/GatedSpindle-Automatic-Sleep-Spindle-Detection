@@ -3,7 +3,7 @@
 import torch
 import numpy as np
 from typing import List, Tuple
-from configs.dreams_config import POST_PROCESSING_PARAMS
+from configs.model_config import POST_PROCESSING_PARAMS
 
 def merge_close_events(events: List[Tuple[int, int]], fs: float, gap_thresh_sec) -> List[Tuple[int, int]]:
     if not events: return []

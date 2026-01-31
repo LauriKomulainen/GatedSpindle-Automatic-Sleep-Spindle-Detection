@@ -1,3 +1,4 @@
+pyedflib
 matplotlib==3.10.8
 mne==1.11.0
 numpy==2.4.0

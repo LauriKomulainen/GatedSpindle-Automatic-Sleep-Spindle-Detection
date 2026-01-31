@@ -31,6 +31,12 @@ def compute_input_channels(raw_signal_np, fs):
     ch3 = torch.tensor(env_norm.copy(), dtype=torch.float32).unsqueeze(0)
     channels.append(ch3)
 
+    # CH4: Delta (0.4-4 Hz)
+    delta_signal = apply_bandpass_filter(raw_signal_np, fs, 0.4, 4, order=4)
+    delta_signal = normalize_data(delta_signal)
+    ch4 = torch.tensor(delta_signal.copy(), dtype=torch.float32).unsqueeze(0)
+    #channels.append(ch4)
+
     return torch.cat(channels, dim=0)
 
 

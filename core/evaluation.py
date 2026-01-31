@@ -10,20 +10,10 @@ from tqdm import tqdm
 from typing import Dict
 from postprocessing.postprocessing import stitch_predictions_1d, find_events_dual_thresh, calculate_iou
 from utils.reporting import generate_detailed_csv
-from paths import SELECTED_DATASET
+from configs.model_config import POST_PROCESSING_PARAMS, INFERENCE_PARAMS
+from configs.config_loader import DATA_PARAMS
 
 log = logging.getLogger(__name__)
-
-if SELECTED_DATASET == "DREAMS":
-    from configs.dreams_config import (
-        DATA_PARAMS, INFERENCE_PARAMS, POST_PROCESSING_PARAMS
-    )
-elif SELECTED_DATASET == "MASS":
-    from configs.mass_config import (
-        DATA_PARAMS, INFERENCE_PARAMS, POST_PROCESSING_PARAMS
-    )
-else:
-    raise ValueError(f"Unknown dataset: {SELECTED_DATASET}")
 
 
 def aggregate_and_save_summary(repeat_metrics: Dict[str, list],
