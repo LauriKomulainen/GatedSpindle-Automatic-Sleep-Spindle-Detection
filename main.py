@@ -267,7 +267,7 @@ def main():
     for repeat_idx in repeats:
         current_seed = base_seed + repeat_idx
         set_seed(current_seed)
-        log.info(f"Repeat {repeat_idx + 1} / {len(repeats)}")
+        log.info(f"Repeat {repeat_idx + 1} / {len(repeats)} (Seed: {current_seed})")
 
         repeat_dir = os.path.join(master_dir, f"Repeat_{repeat_idx + 1}")
         if args.mode == "train":

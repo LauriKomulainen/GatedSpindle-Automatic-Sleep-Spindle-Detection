@@ -4,7 +4,7 @@ from pathlib import Path
 import sys
 
 # CONFIGURATION START (DREAMS or MASS)
-SELECTED_DATASET = "DREAMS"
+SELECTED_DATASET = "MASS"
 
 # Project root
 ROOT_DIR = Path(__file__).parent

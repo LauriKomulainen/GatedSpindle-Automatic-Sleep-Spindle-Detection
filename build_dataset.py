@@ -146,6 +146,7 @@ def _create_stage_mask(hypnogram: np.ndarray, signal_length: int, fs: float) -> 
 def segment_data(raw, hypnogram: np.ndarray, raw_unfiltered: np.ndarray = None) -> tuple:
     """
     Segment continuous signal into overlapping windows with stage filtering.
+    Uses midpoint rule: window is kept if its center point falls within valid sleep stages.
 
     Returns:
         tuple: (x_windows, y_masks, n_total_spindles, n_kept_spindles, raw_windows, window_times)
@@ -157,48 +158,88 @@ def segment_data(raw, hypnogram: np.ndarray, raw_unfiltered: np.ndarray = None) 
     window_samples = int(WINDOW_SEC * fs)
     step_samples = int((WINDOW_SEC - OVERLAP_SEC) * fs)
 
-    # Create masks
+    # Create spindle mask from annotations
     spindle_mask = _create_spindle_mask(raw.annotations, signal_length, fs)
-    stage_mask = _create_stage_mask(hypnogram, signal_length, fs) if hypnogram is not None else np.ones(signal_length, dtype=np.float32)
 
-    # Count total spindles
+    # Count total spindles (before stage filtering)
     _, n_total = label(spindle_mask > 0)
 
+    # Calculate n_kept: spindles that fall within valid sleep stages
+    # This matches the old logic where filtering is applied to the mask directly
+    if hypnogram is not None:
+        stage_mask = _create_stage_mask(hypnogram, signal_length, fs)
+        filtered_spindle_mask = spindle_mask * stage_mask
+        _, n_kept = label(filtered_spindle_mask > 0)
+
+        n_lost = n_total - n_kept
+        log.info(f"  Spindle events: Raw Union: {n_total}. In N2/N3 stages: {n_kept}. Lost: {n_lost}")
+    else:
+        n_kept = n_total
+
+    use_hypno = hypnogram is not None
     x_windows, y_masks, raw_windows, window_times = [], [], [], []
 
-    # Sliding window extraction
-    start = 0
-    while start + window_samples <= signal_length:
+    # Statistics for logging
+    kept_midpoint = 0
+    kept_strict = 0
+    discarded_mixed = 0
+
+    # Sliding window extraction with midpoint rule
+    for start in range(0, signal_length - window_samples, step_samples):
         end = start + window_samples
 
-        # Keep window if at least 50% overlaps with valid stages
-        if stage_mask[start:end].mean() >= 0.5:
-            window = signal[start:end]
+        if use_hypno:
+            # Midpoint rule: check if the center of the window is in valid stage
+            midpoint_sec = (start + window_samples / 2) / fs
+            mid_idx = int(midpoint_sec / HYPNOGRAM_RESOLUTION_SEC)
 
-            # Apply per-window normalization if enabled
-            if USE_INSTANCE_NORM:
-                window = normalization.normalize_data(window)
+            if mid_idx >= len(hypnogram):
+                break
 
-            x_windows.append(window)
-            y_masks.append(spindle_mask[start:end])
-            window_times.append(start / fs)
-            if raw_unfiltered is not None:
-                raw_windows.append(raw_unfiltered[start:end])
+            is_valid_midpoint = hypnogram[mid_idx] in INCLUDED_STAGES
 
-        start += step_samples
+            # Check strict validity for stats (entire window in valid stages)
+            start_sec = start / fs
+            end_sec = (end - 1) / fs
+            s_idx = int(start_sec / HYPNOGRAM_RESOLUTION_SEC)
+            e_idx = int(end_sec / HYPNOGRAM_RESOLUTION_SEC)
+            stages_in_window = hypnogram[s_idx: e_idx + 1]
+            is_valid_strict = all(s in INCLUDED_STAGES for s in stages_in_window)
+
+            if is_valid_midpoint:
+                kept_midpoint += 1
+                if not is_valid_strict:
+                    discarded_mixed += 1
+
+            if not is_valid_midpoint:
+                continue
+
+            if is_valid_strict:
+                kept_strict += 1
+
+        # Extract window
+        window = signal[start:end]
+
+        # Apply per-window normalization if enabled
+        if USE_INSTANCE_NORM:
+            window = normalization.normalize_data(window)
+
+        x_windows.append(window)
+        y_masks.append(spindle_mask[start:end])
+        window_times.append(start / fs)
+
+        if raw_unfiltered is not None:
+            raw_windows.append(raw_unfiltered[start:end])
+
+    # Log window segmentation statistics
+    if use_hypno:
+        n_pure = kept_midpoint - discarded_mixed
+        n_transition = discarded_mixed
+        log.info(f"  Windows segmentation: Total={kept_midpoint} (midpoint rule)")
+        log.info(f"       Pure N2/N3: {n_pure}, Mixed with other stages: {n_transition}")
 
     x_windows = np.array(x_windows, dtype=np.float32)
     y_masks = np.array(y_masks, dtype=np.float32)
-
-    # Count spindles in kept windows
-    combined_mask = np.zeros(signal_length, dtype=np.float32)
-    for i, wt in enumerate(window_times):
-        start_sample = int(wt * fs)
-        end_sample = start_sample + window_samples
-        combined_mask[start_sample:end_sample] = np.maximum(
-            combined_mask[start_sample:end_sample], y_masks[i]
-        )
-    _, n_kept = label(combined_mask > 0)
 
     return (
         x_windows,
@@ -258,17 +299,18 @@ def _process_patient(patient_file_group: dict, processed_dir: Path, plots_dir: P
         log.warning(f"  No hypnogram for {patient_id}, skipping stage filtering")
 
     x_windows, y_masks, n_total, n_kept, raw_windows, window_times = segment_data(
-        raw, hypnogram, original_signal
+        raw, hypnogram,
+        original_signal
     )
 
     if len(x_windows) == 0:
-        log.warning(f"  No valid windows for {patient_id}")
+        log.warning(f"No valid windows for {patient_id}")
         return None
 
-    log.info(f"  Final shapes: X={x_windows.shape}, Y={y_masks.shape}")
+    log.info(f"Final shapes: X={x_windows.shape}, Y={y_masks.shape}")
 
     # Save visualization examples
-    try:
+    """    try:
         save_model_input_examples(
             x_data=x_windows,
             y_data=y_masks,
@@ -284,6 +326,8 @@ def _process_patient(patient_file_group: dict, processed_dir: Path, plots_dir: P
         )
     except Exception as e:
         log.warning(f"  Could not save input examples: {e}")
+        """
+
 
     # Save processed arrays
     np.save(processed_dir / f"{patient_id}_X_1D.npy", x_windows)

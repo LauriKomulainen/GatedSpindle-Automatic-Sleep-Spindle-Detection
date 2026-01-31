@@ -2,7 +2,7 @@
 
 # 1. Data & Preprocessing Parameters
 DATA_PARAMS = {
-    'fs': 200.0,  # Resample target frequency
+    'fs': 256.0,  # Resample target frequency
     'window_sec': 20.0,
     'overlap_sec': 0,
     'lowcut': 0.3,
@@ -31,7 +31,6 @@ DATA_PARAMS = {
 
 CV_CONFIG = {
     'folds_to_run': None
-    #'folds_to_run': [2,3]
 }
 
 '''
