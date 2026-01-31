@@ -405,7 +405,7 @@ def find_mass_data_files(data_dir: str) -> list:
     Patient inclusion depends on scorer_mode:
     - 'E1': Include patients that have Spindles_E1.edf (all 19)
     - 'E2': Include patients that have Spindles_E2.edf (15 patients)
-    - 'UNION': Include patients that have at least one spindle file
+    - 'UNION': Include patients that have both Spindles_E1 and Spindles_E2 files
 
     Args:
         data_dir: Path to directory containing MASS EDF files
