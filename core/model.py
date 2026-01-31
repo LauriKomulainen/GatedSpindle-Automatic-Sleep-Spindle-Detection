@@ -7,7 +7,7 @@ import logging
 import os
 from tqdm import tqdm
 from torch.optim.swa_utils import AveragedModel, SWALR
-from configs.dreams_config import TRAINING_PARAMS
+from configs.model_config import TRAINING_PARAMS
 
 log = logging.getLogger(__name__)
 

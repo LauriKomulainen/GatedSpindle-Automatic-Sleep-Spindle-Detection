@@ -1,336 +1,331 @@
-# data_handler.py
+# build_dataset.py
 
-import logging
-import numpy as np
-import time
-import shutil
+"""
+Dataset Builder for Sleep Spindle Detection
+============================================
+Preprocesses PSG data for training sleep spindle detection models.
+Supports DREAMS and MASS datasets through a unified interface.
+
+Pipeline:
+1. Discover and load raw EDF files
+2. Apply bandpass filtering and normalization
+3. Extract sleep spindle annotations from expert scorers
+4. Segment continuous signals into overlapping windows
+5. Filter windows by sleep stage (N2/N3)
+6. Save processed data as NumPy arrays
+
+Usage:
+    python build_dataset.py
+"""
+
 import json
-from scipy.ndimage import label, find_objects
+import logging
+import shutil
+import time
+from pathlib import Path
 
-# CONFIGS & UTILS
+import numpy as np
+import pyedflib
+from scipy.ndimage import label
+
+import paths
 from utils.logger import setup_logging
 from signal_processing import bandpassfilter, normalization
 from utils.signal_visualization import save_model_input_examples, plot_eeg_trace
-
-import paths
-from paths import SELECTED_DATASET, DATA_DIRECTORY
+from configs.config_loader import DATA_PARAMS, SELECTED_DATASET
 
 setup_logging("data_handler.log")
 log = logging.getLogger(__name__)
 
-# DYNAMIC IMPORT & SETUP
-if SELECTED_DATASET == "DREAMS":
-    log.info(f"Dataset selected: {SELECTED_DATASET}")
-    from configs.dreams_config import DATA_PARAMS, SIGNAL_VISUALIZATION_PARAMS
-    from data_loaders import dreams_loader as loader_module
-
-    find_dataset_files = loader_module.find_dreams_data_files
-    load_patient_data = loader_module.load_dreams_patient_data
-    load_hypnograms = loader_module.load_dreams_hypnogram
-    DATA_DIRECTORY = paths.RAW_DREAMS_DATA_DIR
-
-elif SELECTED_DATASET == "MASS":
-    log.info(f"Dataset selected: {SELECTED_DATASET}")
-    from configs.mass_config import DATA_PARAMS, SIGNAL_VISUALIZATION_PARAMS
-    from data_loaders import mass_loader as loader_module
-
-    find_dataset_files = loader_module.find_mass_data_files
-    load_patient_data = loader_module.load_mass_patient_data
-    load_hypnogram = loader_module.load_mass_hypnogram
-    DATA_DIRECTORY = paths.RAW_MASS_DATA_DIR
-else:
-    raise ValueError(f"Unknown dataset in paths.py: {SELECTED_DATASET}")
-
-# CONSTANTS
-PROCESSED_DATA_DIR = paths.PROCESSED_DATA_DIR
-PLOTS_DIR = paths.PLOTS_DIR
-DATA_DIRECTORY = paths.RAW_DREAMS_DATA_DIR
-
-LOWCUT = DATA_PARAMS['lowcut']
-HIGHCUT = DATA_PARAMS['highcut']
-FILTER_ORDER = DATA_PARAMS['filter_order']
-WINDOW_SEC = DATA_PARAMS['window_sec']
-OVERLAP_SEC = DATA_PARAMS['overlap_sec']
-USE_INSTANCE_NORM = DATA_PARAMS['use_instance_norm']
-INCLUDED_STAGES = DATA_PARAMS['included_stages']
-HYPNO_RES = DATA_PARAMS['hypnogram_resolution_sec']
+# Extract parameters from config
+LOWCUT = DATA_PARAMS["lowcut"]
+HIGHCUT = DATA_PARAMS["highcut"]
+FILTER_ORDER = DATA_PARAMS["filter_order"]
+WINDOW_SEC = DATA_PARAMS["window_sec"]
+OVERLAP_SEC = DATA_PARAMS["overlap_sec"]
+USE_INSTANCE_NORM = DATA_PARAMS["use_instance_norm"]
+INCLUDED_STAGES = DATA_PARAMS["included_stages"]
+HYPNOGRAM_RESOLUTION_SEC = DATA_PARAMS["hypnogram_resolution_sec"]
 
 
-def get_scorer_annotations(annotation_files, sfreq):
-    """
-    Extracts scorer events for visualization.
-    Only functional for DREAMS txt annotations. Returns empty for MASS.
-    """
-    if SELECTED_DATASET != "DREAMS":
-        return [], []
-
-    scorer1_evs = []
-    scorer2_evs = []
-
-    for ann_file in annotation_files:
-        # Access the helper of dreams_loader
-        mne_ann = loader_module._load_dreams_annotations_txt(ann_file, sfreq)
-        filename = str(ann_file.name).lower()
-
-        events = []
-        if mne_ann:
-            for onset, duration in zip(mne_ann.onset, mne_ann.duration):
-                events.append((onset, duration))
-
-        if "scoring1" in filename:
-            scorer1_evs.extend(events)
-        elif "scoring2" in filename:
-            scorer2_evs.extend(events)
-
-    return scorer1_evs, scorer2_evs
+def _load_dataset_config() -> dict:
+    """Load dataset-specific loaders and configuration."""
+    if SELECTED_DATASET == "DREAMS":
+        from data_loaders import dreams_loader as loader
+        return {
+            "data_dir": paths.RAW_DREAMS_DATA_DIR,
+            "loader_module": loader,
+            "find_files": loader.find_dreams_data_files,
+            "load_patient": loader.load_dreams_patient_data,
+            "load_hypnogram": loader.load_dreams_hypnogram,
+            "viz_params": {"channel_names": ["EEG"]},
+        }
+    elif SELECTED_DATASET == "MASS":
+        from data_loaders import mass_loader as loader
+        return {
+            "data_dir": paths.RAW_MASS_DATA_DIR,
+            "loader_module": loader,
+            "find_files": loader.find_mass_data_files,
+            "load_patient": loader.load_mass_patient_data,
+            "load_hypnogram": loader.load_mass_hypnogram,
+            "viz_params": {"channel_names": DATA_PARAMS.get("channels", ["EEG C3-CLE"])},
+        }
+    else:
+        raise ValueError(f"Unknown dataset: {SELECTED_DATASET}")
 
 
-def segment_data_with_filtering(raw, hypnogram, window_sec, overlap_sec, raw_unfiltered_array=None):
-    fs = raw.info['sfreq']
-    signal = raw.get_data()[0]
+# Initialize dataset config
+CONFIG = _load_dataset_config()
+log.info(f"Dataset selected: {SELECTED_DATASET}")
 
-    # 1. Spindle Event Filtering
-    vote_mask = np.zeros_like(signal, dtype=np.float32)
 
-    # Works for both DREAMS and MASS because loaders populate raw.annotations
-    for annot in raw.annotations:
-        if 'spindle' in annot['description'].lower():
-            start_sample = int(annot['onset'] * fs)
-            end_sample = int(start_sample + (annot['duration'] * fs))
-            end_sample = min(end_sample, len(vote_mask))
-            if start_sample < end_sample:
-                vote_mask[start_sample:end_sample] = 1.0
+def get_scorer_annotations(patient_file_group: dict, sfreq: float) -> tuple:
+    """Extract sleep spindle annotations from expert scorers for visualization."""
+    scorer1_events, scorer2_events = [], []
 
-    _, n_total = label(vote_mask)
-
-    if hypnogram is not None:
-        valid_stage_mask = np.zeros_like(vote_mask)
-        samples_per_epoch = int(HYPNO_RES * fs)
-
-        for i, stage in enumerate(hypnogram):
-            start = i * samples_per_epoch
-            end = start + samples_per_epoch
-            if start >= len(valid_stage_mask): break
-            end = min(end, len(valid_stage_mask))
-
-            if stage in INCLUDED_STAGES:
-                valid_stage_mask[start:end] = 1.0
-
-        # Apply filtering
-        filtered_mask = vote_mask * valid_stage_mask
-        _, n_kept = label(filtered_mask)
-
-        n_lost = n_total - n_kept
-        log.info(f"Spindle events: Raw Union: {n_total}. Union of N2 and N3 stages: {n_kept}. Lost spindles: {n_lost}")
-
-        # Analysis of lost events
-        if n_lost > 0:
-            rejected_mask = vote_mask * (1.0 - valid_stage_mask)
-            labeled_rejected, _ = label(rejected_mask)
-            slices = find_objects(labeled_rejected)
-
-            reason_counts = {}
-            for sl in slices:
-                mid_idx = (sl[0].start + sl[0].stop) // 2
-                hypno_idx = int(mid_idx / (HYPNO_RES * fs))
-
-                if hypno_idx < len(hypnogram):
-                    stage = hypnogram[hypno_idx]
-                    reason_counts[stage] = reason_counts.get(stage, 0) + 1
-
-    # 2. Window Segmentation Logic
-    window_samples = int(window_sec * fs)
-    overlap_samples = int(overlap_sec * fs)
-    step_samples = window_samples - overlap_samples
-
-    all_windows = []
-    all_masks = []
-    all_raw_windows = []
-
-    kept_midpoint = 0
-    kept_strict = 0
-    discarded_mixed = 0
-
-    use_hypno = hypnogram is not None
-
-    for start in range(0, len(signal) - window_samples, step_samples):
-        end = start + window_samples
-
-        if use_hypno:
-            midpoint_sec = (start + window_samples / 2) / fs
-            mid_idx = int(midpoint_sec / HYPNO_RES)
-
-            if mid_idx >= len(hypnogram): break
-
-            is_valid_midpoint = hypnogram[mid_idx] in INCLUDED_STAGES
-
-            # Check strict validity for stats
-            start_sec = start / fs
-            end_sec = (end - 1) / fs
-            s_idx = int(start_sec / HYPNO_RES)
-            e_idx = int(end_sec / HYPNO_RES)
-            stages_in_window = hypnogram[s_idx: e_idx + 1]
-            is_valid_strict = all(s in INCLUDED_STAGES for s in stages_in_window)
-
-            if is_valid_midpoint:
-                kept_midpoint += 1
-                if not is_valid_strict:
-                    discarded_mixed += 1
-
-            if not is_valid_midpoint:
+    if SELECTED_DATASET == "DREAMS":
+        loader = CONFIG["loader_module"]
+        for ann_file in patient_file_group.get("annotation_files", []):
+            mne_annotations = loader._load_dreams_annotations_txt(ann_file, sfreq)
+            if not mne_annotations:
                 continue
 
-        kept_strict += 1 if (use_hypno and is_valid_strict) else 0
+            events = list(zip(mne_annotations.onset, mne_annotations.duration))
+            filename = str(ann_file.name).lower()
+            if "scoring1" in filename:
+                scorer1_events.extend(events)
+            elif "scoring2" in filename:
+                scorer2_events.extend(events)
 
-        sig_window = signal[start:end]
-        mask_window = vote_mask[start:end]
+    elif SELECTED_DATASET == "MASS":
+        try:
+            with pyedflib.EdfReader(str(patient_file_group["file_eeg"])) as f_eeg:
+                psg_offset = f_eeg.starttime_subsecond * 1e-7
 
-        if raw_unfiltered_array is not None:
-            raw_window_segment = raw_unfiltered_array[start:end]
-            all_raw_windows.append(raw_window_segment)
+            for file_key, event_list in [("file_marks_1", scorer1_events), ("file_marks_2", scorer2_events)]:
+                marks_file = patient_file_group[file_key]
+                if marks_file.exists():
+                    with pyedflib.EdfReader(str(marks_file)) as f:
+                        time_adj = f.starttime_subsecond * 1e-7 - psg_offset
+                        onsets, durations = f.readAnnotations()[:2]
+                        event_list.extend(zip(onsets + time_adj, durations))
+        except Exception as e:
+            log.warning(f"Could not load MASS scorer events: {e}")
 
-        if USE_INSTANCE_NORM:
-            sig_window = normalization.normalize_data(sig_window)
+    return scorer1_events, scorer2_events
 
-        all_windows.append(sig_window)
-        all_masks.append(mask_window)
 
-    if use_hypno:
-        n_pure = kept_midpoint - discarded_mixed
-        n_transition = discarded_mixed
+def _create_spindle_mask(annotations: list, signal_length: int, fs: float) -> np.ndarray:
+    """Create binary mask from spindle annotations."""
+    mask = np.zeros(signal_length, dtype=np.float32)
+    for annot in annotations:
+        if "spindle" not in annot["description"].lower():
+            continue
+        start = int(annot["onset"] * fs)
+        end = min(int(start + annot["duration"] * fs), signal_length)
+        if start < end:
+            mask[start:end] = 1.0
+    return mask
 
-        log.info(f"Windows segmentation report:")
-        log.info(f"Total windows included: {kept_midpoint}. Based on midpoint rule")
-        log.info(f"     |__ N2 or N3 sleep stage windows: {n_pure}")
-        log.info(f"     |__ Windows mixed with other stages: {n_transition}")
 
-    return np.array(all_windows), np.array(all_masks), n_total, n_kept, np.array(all_raw_windows)
+def _create_stage_mask(hypnogram: np.ndarray, signal_length: int, fs: float) -> np.ndarray:
+    """Create mask for valid sleep stages."""
+    mask = np.zeros(signal_length, dtype=np.float32)
+    samples_per_epoch = int(HYPNOGRAM_RESOLUTION_SEC * fs)
+
+    for i, stage in enumerate(hypnogram):
+        start = i * samples_per_epoch
+        if start >= signal_length:
+            break
+        end = min(start + samples_per_epoch, signal_length)
+        if stage in INCLUDED_STAGES:
+            mask[start:end] = 1.0
+    return mask
+
+
+def segment_data(raw, hypnogram: np.ndarray, raw_unfiltered: np.ndarray = None) -> tuple:
+    """
+    Segment continuous signal into overlapping windows with stage filtering.
+
+    Returns:
+        tuple: (x_windows, y_masks, n_total_spindles, n_kept_spindles, raw_windows, window_times)
+    """
+    fs = raw.info["sfreq"]
+    signal = raw.get_data()[0]
+    signal_length = len(signal)
+
+    window_samples = int(WINDOW_SEC * fs)
+    step_samples = int((WINDOW_SEC - OVERLAP_SEC) * fs)
+
+    # Create masks
+    spindle_mask = _create_spindle_mask(raw.annotations, signal_length, fs)
+    stage_mask = _create_stage_mask(hypnogram, signal_length, fs) if hypnogram is not None else np.ones(signal_length, dtype=np.float32)
+
+    # Count total spindles
+    _, n_total = label(spindle_mask > 0)
+
+    x_windows, y_masks, raw_windows, window_times = [], [], [], []
+
+    # Sliding window extraction
+    start = 0
+    while start + window_samples <= signal_length:
+        end = start + window_samples
+
+        # Keep window if at least 50% overlaps with valid stages
+        if stage_mask[start:end].mean() >= 0.5:
+            window = signal[start:end]
+
+            # Apply per-window normalization if enabled
+            if USE_INSTANCE_NORM:
+                window = normalization.normalize_data(window)
+
+            x_windows.append(window)
+            y_masks.append(spindle_mask[start:end])
+            window_times.append(start / fs)
+            if raw_unfiltered is not None:
+                raw_windows.append(raw_unfiltered[start:end])
+
+        start += step_samples
+
+    x_windows = np.array(x_windows, dtype=np.float32)
+    y_masks = np.array(y_masks, dtype=np.float32)
+
+    # Count spindles in kept windows
+    combined_mask = np.zeros(signal_length, dtype=np.float32)
+    for i, wt in enumerate(window_times):
+        start_sample = int(wt * fs)
+        end_sample = start_sample + window_samples
+        combined_mask[start_sample:end_sample] = np.maximum(
+            combined_mask[start_sample:end_sample], y_masks[i]
+        )
+    _, n_kept = label(combined_mask > 0)
+
+    return (
+        x_windows,
+        y_masks,
+        n_total,
+        n_kept,
+        np.array(raw_windows) if raw_windows else np.array([]),
+        np.array(window_times),
+    )
+
+
+def _prepare_directories() -> tuple:
+    """Prepare output directories, cleaning if they exist."""
+    dirs = [paths.PROCESSED_DATA_DIR, paths.PLOTS_DIR]
+    for d in dirs:
+        if d.exists():
+            log.info(f"Cleaning: {d}")
+            shutil.rmtree(d)
+        d.mkdir(parents=True, exist_ok=True)
+    return tuple(dirs)
+
+
+def _process_patient(patient_file_group: dict, processed_dir: Path, plots_dir: Path) -> dict | None:
+    """Process a single patient's data."""
+    patient_id = patient_file_group["id"]
+    log.info(f"Processing patient: {patient_id}")
+
+    # Load raw data
+    raw = CONFIG["load_patient"](patient_file_group)
+    if raw is None:
+        log.warning(f"Failed to load data for {patient_id}")
+        return None
+
+    fs = raw.info["sfreq"]
+    scorer1_events, scorer2_events = get_scorer_annotations(patient_file_group, fs)
+    original_signal = raw.get_data()[0].copy()
+
+    # Apply bandpass filter
+    filtered = bandpassfilter.apply_bandpass_filter(
+        raw.get_data()[0], fs, LOWCUT, HIGHCUT, FILTER_ORDER
+    )
+
+    # Generate EEG trace plot
+    try:
+        plot_eeg_trace(filtered, fs, scorer1_events, scorer2_events, patient_id, plots_dir)
+    except Exception as e:
+        log.warning(f"  EEG trace plotting failed: {e}")
+
+    # Apply normalization if needed
+    if not USE_INSTANCE_NORM:
+        filtered = normalization.normalize_data(filtered)
+    raw._data[0] = filtered
+
+    # Load hypnogram and segment
+    hypnogram = CONFIG["load_hypnogram"](patient_file_group)
+    if hypnogram is None:
+        log.warning(f"  No hypnogram for {patient_id}, skipping stage filtering")
+
+    x_windows, y_masks, n_total, n_kept, raw_windows, window_times = segment_data(
+        raw, hypnogram, original_signal
+    )
+
+    if len(x_windows) == 0:
+        log.warning(f"  No valid windows for {patient_id}")
+        return None
+
+    log.info(f"  Final shapes: X={x_windows.shape}, Y={y_masks.shape}")
+
+    # Save visualization examples
+    try:
+        save_model_input_examples(
+            x_data=x_windows,
+            y_data=y_masks,
+            raw_windows=raw_windows,
+            subject_id=patient_id,
+            save_dir=plots_dir,
+            fs=fs,
+            n_examples=1,
+            channel_names=CONFIG["viz_params"]["channel_names"],
+            scorer1_events=scorer1_events,
+            scorer2_events=scorer2_events,
+            window_times=window_times,
+        )
+    except Exception as e:
+        log.warning(f"  Could not save input examples: {e}")
+
+    # Save processed arrays
+    np.save(processed_dir / f"{patient_id}_X_1D.npy", x_windows)
+    np.save(processed_dir / f"{patient_id}_Y_1D.npy", y_masks)
+    log.info(f"  Saved: {patient_id}_X_1D.npy, {patient_id}_Y_1D.npy")
+
+    return {
+        "id": patient_id,
+        "s1": len(scorer1_events),
+        "s2": len(scorer2_events),
+        "union": n_total,
+        "kept": n_kept,
+        "n_windows": len(x_windows),
+    }
 
 
 def main():
-    log.info(f"Starting data preprocessing for: {SELECTED_DATASET}")
-    log.info(f"Reading raw data from: {DATA_DIRECTORY}")
-    log.info(f"Saving processed data to: {PROCESSED_DATA_DIR}")
+    log.info(f"Starting preprocessing for: {SELECTED_DATASET}")
+    log.info(f"Raw data: {CONFIG['data_dir']}")
+    log.info(f"Output: {paths.PROCESSED_DATA_DIR}")
 
     start_time = time.time()
+    processed_dir, plots_dir = _prepare_directories()
 
-    # Cleanup processed data and plots folder
-    if PROCESSED_DATA_DIR.exists():
-        log.info(f"Cleaning previous processed data from: {PROCESSED_DATA_DIR}")
-        shutil.rmtree(PROCESSED_DATA_DIR)
-
-    if PLOTS_DIR.exists():
-        log.info(f"Cleaning previous plots from: {PLOTS_DIR}")
-        shutil.rmtree(PLOTS_DIR)
-
-    PROCESSED_DATA_DIR.mkdir(parents=True, exist_ok=True)
-    PLOTS_DIR.mkdir(parents=True, exist_ok=True)
-    log.info(f"Plots will be saved to: {PLOTS_DIR}")
-
-    # 1. Find Files
-    patient_list = find_dataset_files(DATA_DIRECTORY)
-
+    patient_list = CONFIG["find_files"](CONFIG["data_dir"])
     if not patient_list:
-        log.error(f"No valid data files found in {DATA_DIRECTORY}. Check paths.py file.")
+        log.error(f"No valid data files found in {CONFIG['data_dir']}")
         return
 
-    subject_stats = []
+    log.info(f"Found {len(patient_list)} patients")
 
-    for patient_file_group in patient_list:
-        patient_id = patient_file_group['id']
-        log.info(f"Processing patient: {patient_id}")
+    stats = [s for p in patient_list if (s := _process_patient(p, processed_dir, plots_dir))]
 
-        # 2. Load Data
-        raw = load_patient_data(patient_file_group)
-        if not raw:
-            continue
+    if stats:
+        with open(processed_dir / "subject_stats.json", "w") as f:
+            json.dump(stats, f, indent=2)
 
-        fs = raw.info['sfreq']
+        total_windows = sum(s["n_windows"] for s in stats)
+        total_spindles = sum(s["kept"] for s in stats)
+        log.info(f"Summary: {len(stats)} patients, {total_windows} windows, {total_spindles} spindles")
 
-        # Scorer annotations for visualization (DREAMS only)
-        s1_events, s2_events = get_scorer_annotations(patient_file_group['annotation_files'], fs)
-
-        original_raw_signal = raw.get_data()[0].copy()
-
-        # Filter
-        signal_data = raw.get_data()[0]
-        filtered_signal = bandpassfilter.apply_bandpass_filter(
-            signal_data, fs, LOWCUT, HIGHCUT, FILTER_ORDER
-        )
-
-        # Plot trace
-        try:
-            plot_eeg_trace(filtered_signal, fs, s1_events, s2_events, patient_id, PLOTS_DIR)
-        except Exception as e:
-            log.warning(f"Signal visualization plotting failed: {e}")
-
-        if not USE_INSTANCE_NORM:
-            filtered_signal = normalization.normalize_data(filtered_signal)
-
-        raw._data[0] = filtered_signal
-
-        # 3. Load Hypnogram
-        hypnogram = None
-        hypnogram = load_hypnogram(patient_file_group)
-
-        if hypnogram is None:
-            log.warning(f"Skipping filtering for {patient_id} as no hypnogram found.")
-
-        # 4. Segmentation
-        x_windows, y_masks, n_union, n_kept, x_raw_windows = segment_data_with_filtering(
-            raw, hypnogram,
-            window_sec=WINDOW_SEC,
-            overlap_sec=OVERLAP_SEC,
-            raw_unfiltered_array=original_raw_signal
-        )
-
-        subject_stats.append({
-            'id': patient_id,
-            's1': len(s1_events),
-            's2': len(s2_events),
-            'union': n_union,
-            'kept': n_kept
-        })
-
-        if len(x_windows) == 0:
-            log.warning(f"No windows for {patient_id}. Check hypnogram/stages.")
-            continue
-
-        log.info(f"Final 1D data shape. X: {x_windows.shape}, Y: {y_masks.shape}")
-
-        # 5. Save Model Input Examples
-        channel_names = SIGNAL_VISUALIZATION_PARAMS['channel_names']
-        try:
-            save_model_input_examples(
-                x_data=x_windows,
-                y_data=y_masks,
-                raw_windows=x_raw_windows,
-                subject_id=patient_id,
-                save_dir=PLOTS_DIR,
-                fs=fs,
-                n_examples=2,
-                channel_names=channel_names
-            )
-        except Exception as e:
-            log.warning(f"Could not save input examples for {patient_id}. Error: {e}")
-
-        # 6. Save Data
-        x_path = PROCESSED_DATA_DIR / f"{patient_id}_X_1D.npy"
-        y_path = PROCESSED_DATA_DIR / f"{patient_id}_Y_1D.npy"
-
-        np.save(x_path, x_windows)
-        np.save(y_path, y_masks)
-        log.info(f"Processed data saved to {x_path}")
-
-    # Save Statistics
-    if subject_stats:
-        stats_file = PROCESSED_DATA_DIR / "subject_stats.json"
-        with open(stats_file, 'w') as f:
-            json.dump(subject_stats, f, indent=4)
-        log.info(f"Subject statistics saved to {stats_file}")
-
-    end_time = time.time()
-    log.info(f"Preprocessing complete. Total time: {end_time - start_time:.2f} s")
+    log.info(f"Complete. Time: {time.time() - start_time:.2f}s")
 
 
 if __name__ == "__main__":
