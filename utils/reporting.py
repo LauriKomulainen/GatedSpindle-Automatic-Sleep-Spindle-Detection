@@ -4,7 +4,7 @@ import numpy as np
 import pandas as pd
 import os
 from scipy.signal import welch
-from configs.dreams_config import INFERENCE_PARAMS
+from configs.model_config import INFERENCE_PARAMS
 from postprocessing.postprocessing import calculate_iou
 
 def analyze_signal_properties(signal_segment: np.ndarray, fs: float):
