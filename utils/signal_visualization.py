@@ -1,95 +1,176 @@
-# utils/signal_visualization.py
-
 from pathlib import Path
 import numpy as np
 import logging
 import matplotlib.pyplot as plt
-from configs.dreams_config import DATA_PARAMS
 from utils.logger import setup_logging
 from core.dataset import compute_input_channels
 from scipy.ndimage import label, find_objects
+from configs.config_loader import DATA_PARAMS
 
 setup_logging("data_handler.log")
 log = logging.getLogger(__name__)
 
 WINDOW_SEC = DATA_PARAMS['window_sec']
+OVERLAP_SEC = DATA_PARAMS.get('overlap_sec', 0)
+
 
 def save_model_input_examples(x_data, y_data, raw_windows, subject_id, save_dir,
-                              n_examples=2, fs=100, channel_names=None):
-    save_dir = Path(save_dir) / "Model_input_examples"
-    save_dir.mkdir(parents=True, exist_ok=True)
-
-    has_spindle_indices = np.where(np.any(y_data > 0, axis=1))[0]
-
-    if len(has_spindle_indices) >= n_examples:
-        chosen_indices = np.random.choice(has_spindle_indices, n_examples, replace=False)
-    elif len(x_data) > 0:
-        chosen_indices = np.random.choice(len(x_data), min(len(x_data), n_examples), replace=False)
-    else:
+                              n_examples=10, fs=256, channel_names=None,
+                              y_data_corrected=None,
+                              correction_val=0.0):
+    """
+    Saves example plots of model inputs.
+    Dynamically distributes n_examples across start, middle, and end of the recording.
+    """
+    # Jos n_examples on None tai 0, lopetetaan heti
+    if not n_examples or n_examples <= 0:
         return
 
-    t_axis = np.linspace(0, WINDOW_SEC, x_data.shape[1])
+    subject_dir = Path(save_dir) / "Model_input_examples" / subject_id
+    subject_dir.mkdir(parents=True, exist_ok=True)
 
-    for idx in chosen_indices:
-        # 1. load data
+    # 1. Identify windows containing spindles
+    has_spindle_indices = np.where(np.any(y_data > 0, axis=1))[0]
+    n_spindles = len(has_spindle_indices)
+
+    if n_spindles == 0:
+        log.warning(f"No spindles found for subject {subject_id}. Skipping plotting.")
+        return
+
+    # 2. Select Indices (Dynamic Start/Middle/End split)
+    if n_spindles <= n_examples:
+        chosen_indices = has_spindle_indices
+    else:
+        part = n_examples // 3
+        remainder = n_examples % 3
+
+        n_start = part + remainder
+        first_selection = has_spindle_indices[:n_start]
+
+        n_end = part
+        last_selection = has_spindle_indices[-n_end:] if n_end > 0 else np.array([], dtype=int)
+
+        n_mid = part
+        middle_selection = np.array([], dtype=int)
+
+        if n_mid > 0:
+            mid_idx = n_spindles // 2
+            start_mid = max(0, mid_idx - (n_mid // 2))
+            end_mid = start_mid + n_mid
+            if end_mid > n_spindles:
+                end_mid = n_spindles
+                start_mid = max(0, end_mid - n_mid)
+
+            middle_selection = has_spindle_indices[start_mid:end_mid]
+
+        chosen_indices = np.unique(np.concatenate([first_selection, middle_selection, last_selection]))
+        if len(chosen_indices) > n_examples:
+            chosen_indices = np.sort(np.random.choice(chosen_indices, n_examples, replace=False))
+
+    t_axis = np.linspace(0, WINDOW_SEC, x_data.shape[1])
+    is_comparison = y_data_corrected is not None
+
+    for i, idx in enumerate(chosen_indices):
+        excerpt_num = i + 1
         base_signal = x_data[idx]
         sig_true_raw = raw_windows[idx]
-        mask = y_data[idx]
+        mask_original = y_data[idx]
+        mask_corrected = y_data_corrected[idx] if is_comparison else None
 
-        # 2. channels from dataset.py
         generated_channels = compute_input_channels(base_signal, fs)
-
         n_channels = generated_channels.shape[0]
-
-        # 3. Plot channels
-        fig, axs = plt.subplots(n_channels + 1, 1, figsize=(10, 3 * (n_channels + 1)), sharex=True)
-
-        fig.suptitle(f"Subject {subject_id} - Window {idx}", fontsize=16)
-
-        # Row 0: Raw Signal (context)
-        axs[0].plot(t_axis, sig_true_raw, color='#7f8c8d', linewidth=0.8, label='Original Raw')
-        axs[0].set_ylabel("uV")
-        axs[0].legend(loc='upper right', fontsize='x-small')
-        axs[0].set_title("Reference: Raw Signal")
-        axs[0].grid(True, alpha=0.3)
-
         colors = ['#2c3e50', '#2980b9', '#8e44ad', '#d35400', '#27ae60', '#c0392b']
 
-        for i in range(n_channels):
-            ax = axs[i + 1]
-            signal = generated_channels[i]
-            color = colors[i % len(colors)]
+        # PLOTTING
+        filename = f"excerpt_{excerpt_num}_win_{idx}_comparison.png" if is_comparison else f"excerpt_{excerpt_num}_win_{idx}.png"
+        save_path = subject_dir / filename
 
-            if channel_names is not None and i < len(channel_names):
-                ch_label = channel_names[i]
-            else:
-                ch_label = f"CH {i + 1}"
+        if is_comparison:
+            # Comparison mode: two columns side by side
+            fig, axs = plt.subplots(n_channels + 1, 2, figsize=(20, 3 * (n_channels + 1)),
+                                    sharex=True, sharey='row')
 
-            ax.plot(t_axis, signal, color=color, linewidth=1, label=ch_label)
+            # Main title
+            main_title = f"Subject {subject_id} - Window {idx}"
+            fig.suptitle(main_title, fontsize=12, y=0.98)
 
-            # Spindle labels
-            ax.fill_between(t_axis, min(signal), max(signal), where=(mask > 0),
-                            color='#e74c3c', alpha=0.3, label='Spindle Label' if i == 0 else "")
+            for row in range(n_channels + 1):
+                if row == 0:
+                    signal_data = sig_true_raw
+                    ch_label = "Raw Signal"
+                    color = '#7f8c8d'
+                    ylabel = "µV"
+                else:
+                    signal_data = generated_channels[row - 1]
+                    color = colors[(row - 1) % len(colors)]
+                    ch_label = channel_names[row - 1] if channel_names and (row - 1) < len(
+                        channel_names) else f"CH {row}"
+                    ylabel = "µV" if ("Raw" in ch_label and "EEG" not in ch_label) else "Norm"
 
-            ax.set_title(ch_label)
+                # Left column (Original)
+                ax_orig = axs[row, 0]
+                ax_orig.plot(t_axis, signal_data, color=color, linewidth=0.8 if row == 0 else 1)
+                ax_orig.set_ylabel(ylabel, fontsize=9)
+                if row > 0:
+                    ax_orig.fill_between(t_axis, min(signal_data), max(signal_data),
+                                         where=(mask_original > 0),
+                                         color='#e74c3c', alpha=0.3, label='Original')
+                    ax_orig.set_title(ch_label, fontsize=10)
+                ax_orig.grid(True, alpha=0.3)
 
-            if "Raw" in ch_label and not "EEG" in ch_label:
-                ylabel_text = "uV"
-            else:
-                ylabel_text = "Norm"
+                # Right column (Corrected)
+                ax_corr = axs[row, 1]
+                ax_corr.plot(t_axis, signal_data, color=color, linewidth=0.8 if row == 0 else 1)
+                if row > 0:
+                    ax_corr.fill_between(t_axis, min(signal_data), max(signal_data),
+                                         where=(mask_corrected > 0),
+                                         color='#e74c3c', alpha=0.3, label='Corrected')
+                    ax_corr.set_title(ch_label, fontsize=10)
+                ax_corr.grid(True, alpha=0.3)
 
-            ax.set_ylabel(ylabel_text)
+            axs[-1, 0].set_xlabel("Time (s)")
+            axs[-1, 1].set_xlabel("Time (s)")
 
-            ax.legend(loc='upper right', fontsize='x-small')
-            ax.grid(True, alpha=0.3)
+            plt.tight_layout()
+            plt.savefig(save_path, dpi=150, bbox_inches='tight')
 
-        axs[-1].set_xlabel("Time (s)")
+        else:
+            # Standard mode: single column
+            fig, axs = plt.subplots(n_channels + 1, 1, figsize=(10, 3 * (n_channels + 1)), sharex=True)
 
-        plt.tight_layout(rect=[0, 0.03, 1, 0.97])
-        plt.savefig(save_dir / f"{subject_id}_win_{idx}_dynamic_inputs.png")
+            # Main title
+            main_title = f"Subject {subject_id} - Window {idx}"
+            fig.suptitle(main_title, fontsize=12, y=0.98)
+
+            axs[0].plot(t_axis, sig_true_raw, color='#7f8c8d', linewidth=0.8, label='Original Raw')
+            axs[0].set_ylabel("µV")
+            axs[0].set_title("Reference: Raw Signal", fontsize=10)
+            axs[0].grid(True, alpha=0.3)
+
+            for ch_idx in range(n_channels):
+                ax = axs[ch_idx + 1]
+                signal = generated_channels[ch_idx]
+                color = colors[ch_idx % len(colors)]
+                ch_label = channel_names[ch_idx] if channel_names and ch_idx < len(
+                    channel_names) else f"CH {ch_idx + 1}"
+
+                ax.plot(t_axis, signal, color=color, linewidth=1, label=ch_label)
+                ax.fill_between(t_axis, min(signal), max(signal),
+                                where=(mask_original > 0),
+                                color='#e74c3c', alpha=0.3, label='Spindle')
+
+                ax.set_title(ch_label, fontsize=10)
+                ylabel_text = "µV" if ("Raw" in ch_label and "EEG" not in ch_label) else "Norm"
+                ax.set_ylabel(ylabel_text)
+                ax.grid(True, alpha=0.3)
+
+            axs[-1].set_xlabel("Time (s)")
+            plt.tight_layout()
+            plt.savefig(save_path, dpi=150, bbox_inches='tight')
+
         plt.close()
 
-    log.info(f"Saved input example plots to {save_dir}")
+    log.info(f"Saved {len(chosen_indices)} input example images to {subject_dir}")
 
 
 def plot_eeg_trace(signal, sfreq, s1_evs, s2_evs, subject_id, save_dir):

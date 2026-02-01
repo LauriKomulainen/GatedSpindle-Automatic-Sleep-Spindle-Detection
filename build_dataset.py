@@ -33,6 +33,7 @@ from utils.logger import setup_logging
 from signal_processing import bandpassfilter, normalization
 from utils.signal_visualization import save_model_input_examples, plot_eeg_trace
 from configs.config_loader import DATA_PARAMS, SELECTED_DATASET
+from configs.model_config import SIGNAL_VISUALIZATION_PARAMS
 
 setup_logging("data_handler.log")
 log = logging.getLogger(__name__)
@@ -172,7 +173,8 @@ def segment_data(raw, hypnogram: np.ndarray, raw_unfiltered: np.ndarray = None) 
         _, n_kept = label(filtered_spindle_mask > 0)
 
         n_lost = n_total - n_kept
-        log.info(f"  Spindle events: Raw Union: {n_total}. In N2/N3 stages: {n_kept}. Lost: {n_lost}")
+        stages_str = "/".join(f"N{s}" if str(s).isdigit() else str(s) for s in INCLUDED_STAGES)
+        log.info(f"  Spindle events: Raw Union: {n_total}. In {stages_str} stages: {n_kept}. Lost: {n_lost}")
     else:
         n_kept = n_total
 
@@ -233,10 +235,7 @@ def segment_data(raw, hypnogram: np.ndarray, raw_unfiltered: np.ndarray = None) 
 
     # Log window segmentation statistics
     if use_hypno:
-        n_pure = kept_midpoint - discarded_mixed
-        n_transition = discarded_mixed
-        log.info(f"  Windows segmentation: Total={kept_midpoint} (midpoint rule)")
-        log.info(f"       Pure N2/N3: {n_pure}, Mixed with other stages: {n_transition}")
+        log.info(f" Windows segmentation: Total={kept_midpoint} (midpoint rule)")
 
     x_windows = np.array(x_windows, dtype=np.float32)
     y_masks = np.array(y_masks, dtype=np.float32)
@@ -309,24 +308,23 @@ def _process_patient(patient_file_group: dict, processed_dir: Path, plots_dir: P
 
     log.info(f"Final shapes: X={x_windows.shape}, Y={y_masks.shape}")
 
+    n_viz_examples = SIGNAL_VISUALIZATION_PARAMS.get('input_examples', None)
+
     # Save visualization examples
-    """    try:
-        save_model_input_examples(
-            x_data=x_windows,
-            y_data=y_masks,
-            raw_windows=raw_windows,
-            subject_id=patient_id,
-            save_dir=plots_dir,
-            fs=fs,
-            n_examples=1,
-            channel_names=CONFIG["viz_params"]["channel_names"],
-            scorer1_events=scorer1_events,
-            scorer2_events=scorer2_events,
-            window_times=window_times,
-        )
-    except Exception as e:
-        log.warning(f"  Could not save input examples: {e}")
-        """
+    if n_viz_examples is not None and n_viz_examples > 0:
+        try:
+            save_model_input_examples(
+                x_data=x_windows,
+                y_data=y_masks,
+                raw_windows=raw_windows,
+                subject_id=patient_id,
+                save_dir=plots_dir,
+                fs=fs,
+                n_examples=n_viz_examples,
+                channel_names=CONFIG["viz_params"]["channel_names"],
+            )
+        except Exception as e:
+            log.warning(f"Could not save input examples: {e}")
 
 
     # Save processed arrays
