@@ -39,14 +39,10 @@ from scipy.interpolate import interp1d
 from scipy.signal import resample_poly
 
 from configs.mass_config import DATA_PARAMS
-from signal_processing import bandpassfilter
 
 log = logging.getLogger(__name__)
 
-# =============================================================================
 # CONFIGURATION CONSTANTS
-# =============================================================================
-
 CHANNEL_NAME = DATA_PARAMS['channels'][0]
 TARGET_FS = float(DATA_PARAMS['fs'])
 PAGE_DURATION = DATA_PARAMS['page_duration']
@@ -57,10 +53,7 @@ MIN_SPINDLE_DURATION = 0.3
 MAX_SPINDLE_DURATION = 3.0
 
 
-# =============================================================================
 # DATA CONTAINER CLASS
-# =============================================================================
-
 class MassRaw:
     """
     Container for processed MASS recording data.
@@ -79,10 +72,7 @@ class MassRaw:
         return np.array(self._data)
 
 
-# =============================================================================
 # SIGNAL PROCESSING UTILITIES
-# =============================================================================
-
 def resample_signal_linear(signal: np.ndarray, fs_old: float, fs_new: float) -> np.ndarray:
     """Resample signal using linear interpolation."""
     if np.isclose(fs_old, fs_new, atol=1e-5):
@@ -96,10 +86,7 @@ def resample_signal_linear(signal: np.ndarray, fs_old: float, fs_new: float) -> 
     return interpolator(t_new).astype(np.float32)
 
 
-# =============================================================================
 # HYPNOGRAM LOADING
-# =============================================================================
-
 def _read_hypnogram_data(path_states_file: str, time_offset: float):
     """
     Read sleep staging (hypnogram) from Base.edf file.
@@ -151,10 +138,7 @@ def _read_hypnogram_data(path_states_file: str, time_offset: float):
     return hypnogram, start_time
 
 
-# =============================================================================
 # SPINDLE ANNOTATION PROCESSING
-# =============================================================================
-
 def _load_spindle_annotations(
         file_group: dict,
         psg_subsecond: float,
@@ -223,25 +207,26 @@ def _load_spindle_annotations(
     combined = np.vstack(raw_marks)
     combined = combined[combined[:, 0].argsort()]
 
-    # Merge overlapping spindles (for UNION mode, or in case of duplicates)
-    merged = _merge_overlapping_intervals(combined)
+    merge_gap_sec = 0.3
+    gap_samples = int(merge_gap_sec * TARGET_FS)
 
-    # Filter by duration
-    durations_sec = (merged[:, 1] - merged[:, 0]) / TARGET_FS
-    valid_mask = (durations_sec >= MIN_SPINDLE_DURATION) & (durations_sec <= MAX_SPINDLE_DURATION)
+    merged = _merge_overlapping_intervals(combined, gap_samples=gap_samples)
 
-    return merged[valid_mask]
+    return merged
 
 
-def _merge_overlapping_intervals(intervals: np.ndarray) -> np.ndarray:
-    """Merge overlapping intervals into non-overlapping segments."""
+def _merge_overlapping_intervals(intervals: np.ndarray, gap_samples: int = 0) -> np.ndarray:
+    """
+    Merge overlapping intervals into non-overlapping segments.
+    Also merges intervals that are closer than 'gap_samples' to each other.
+    """
     if len(intervals) == 0:
         return intervals
 
     merged = [intervals[0].copy()]
 
     for current in intervals[1:]:
-        if current[0] < merged[-1][1]:
+        if current[0] <= (merged[-1][1] + gap_samples):
             merged[-1][1] = max(merged[-1][1], current[1])
         else:
             merged.append(current.copy())
@@ -249,10 +234,7 @@ def _merge_overlapping_intervals(intervals: np.ndarray) -> np.ndarray:
     return np.array(merged)
 
 
-# =============================================================================
 # MAIN DATA LOADING FUNCTION
-# =============================================================================
-
 def load_mass_patient_data(file_group: dict):
     """
     Load and preprocess a complete MASS patient recording.
@@ -278,10 +260,7 @@ def load_mass_patient_data(file_group: dict):
 
     log.info(f"Loading patient: {patient_id} (scorer_mode: {SCORER_MODE})")
 
-    # -------------------------------------------------------------------------
-    # STEP 1: Load PSG signal (this is our t=0 reference)
-    # -------------------------------------------------------------------------
-
+    # 1: Load PSG signal (this is our t=0 reference)
     with pyedflib.EdfReader(eeg_path) as f:
         psg_subsecond = f.starttime_subsecond * 1e-7
         channel_labels = f.getSignalLabels()
@@ -292,30 +271,21 @@ def load_mass_patient_data(file_group: dict):
 
     log.info(f"  PSG subsecond: {psg_subsecond:.6f}s (this is t=0 reference)")
 
-    # -------------------------------------------------------------------------
-    # STEP 2: Get Base.edf offset and calculate time adjustment
-    # -------------------------------------------------------------------------
-
+    # 2: Get Base.edf offset and calculate time adjustment
     with pyedflib.EdfReader(states_path) as f:
         base_subsecond = f.starttime_subsecond * 1e-7
 
     base_time_offset = base_subsecond - psg_subsecond
     log.info(f"  Base subsecond: {base_subsecond:.6f}s (offset: {base_time_offset:+.6f}s)")
 
-    # -------------------------------------------------------------------------
-    # STEP 3: Resample signal
-    # -------------------------------------------------------------------------
-
+    # 3: Resample signal
     fs_rounded = int(np.round(fs_header))
     signal = resample_signal_linear(signal, fs_header, fs_rounded)
 
     if fs_rounded != TARGET_FS:
         signal = resample_poly(signal, int(TARGET_FS), fs_rounded)
 
-    # -------------------------------------------------------------------------
-    # STEP 4: Load hypnogram (with time offset applied)
-    # -------------------------------------------------------------------------
-
+    # 4: Load hypnogram (with time offset applied)
     hypnogram, hypnogram_start = _read_hypnogram_data(states_path, base_time_offset)
 
     if hypnogram is None:
@@ -324,27 +294,12 @@ def load_mass_patient_data(file_group: dict):
 
     log.info(f"  Hypnogram starts at: {hypnogram_start:.2f}s (in PSG time)")
 
-    # -------------------------------------------------------------------------
-    # STEP 5: Crop signal to hypnogram region
-    # -------------------------------------------------------------------------
-
+    # 5: Crop signal to hypnogram region
     crop_start_sec = max(0, hypnogram_start)
     start_sample = int(crop_start_sec * TARGET_FS)
     signal = signal[start_sample:]
 
-    # -------------------------------------------------------------------------
-    # STEP 6: Apply bandpass filter
-    # -------------------------------------------------------------------------
-
-    signal = bandpassfilter.apply_bandpass_filter(
-        signal, TARGET_FS,
-        DATA_PARAMS['lowcut'], DATA_PARAMS['highcut'], DATA_PARAMS['filter_order']
-    )
-
-    # -------------------------------------------------------------------------
-    # STEP 7: Match signal length to hypnogram
-    # -------------------------------------------------------------------------
-
+    # 7: Match signal length to hypnogram
     page_samples = int(PAGE_DURATION * TARGET_FS)
     n_pages = min(len(signal) // page_samples, len(hypnogram))
     n_samples_valid = n_pages * page_samples
@@ -352,10 +307,7 @@ def load_mass_patient_data(file_group: dict):
     signal = signal[:n_samples_valid]
     hypnogram = hypnogram[:n_pages + 1]
 
-    # -------------------------------------------------------------------------
-    # STEP 8: Load spindle annotations (with time offsets applied)
-    # -------------------------------------------------------------------------
-
+    # 8: Load spindle annotations (with time offsets applied)
     spindle_samples = _load_spindle_annotations(
         file_group, psg_subsecond, crop_start_sec, n_samples_valid,
         scorer_mode=SCORER_MODE
@@ -370,10 +322,7 @@ def load_mass_patient_data(file_group: dict):
         for onset, offset in spindle_samples
     ]
 
-    # -------------------------------------------------------------------------
-    # STEP 9: Create and return data container
-    # -------------------------------------------------------------------------
-
+    # 9: Create and return data container
     raw = MassRaw(signal, TARGET_FS, annotations)
     raw.info['crop_start_sec'] = crop_start_sec
     raw.info['psg_subsecond'] = psg_subsecond
@@ -385,10 +334,7 @@ def load_mass_patient_data(file_group: dict):
     return raw
 
 
-# =============================================================================
 # UTILITY FUNCTIONS
-# =============================================================================
-
 def load_mass_hypnogram(file_group: dict) -> np.ndarray:
     """Load only the hypnogram for a patient."""
     states_path = str(file_group['file_states'])
