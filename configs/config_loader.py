@@ -4,7 +4,7 @@
 Centralized configuration loader.
 
 Usage:
-    from configs.config_loader import DATA_PARAMS, CV_CONFIG, TESTING_CONFIG
+    from configs.config_loader import DATA_PARAMS, CV_CONFIG
 """
 
 from paths import SELECTED_DATASET
@@ -16,10 +16,9 @@ if SELECTED_DATASET not in _SUPPORTED_DATASETS:
 
 if SELECTED_DATASET == "DREAMS":
     from configs.dreams_config import DATA_PARAMS, CV_CONFIG
-    TESTING_CONFIG = None
 
 elif SELECTED_DATASET == "MASS":
-    from configs.mass_config import DATA_PARAMS, CV_CONFIG, TESTING_CONFIG
+    from configs.mass_config import DATA_PARAMS, CV_CONFIG
 
 
-__all__ = ["DATA_PARAMS", "CV_CONFIG", "TESTING_CONFIG", "SELECTED_DATASET"]
+__all__ = ["DATA_PARAMS", "CV_CONFIG", "SELECTED_DATASET"]

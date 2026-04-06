@@ -23,10 +23,11 @@ class DiceBCELoss(nn.Module):
         self.smooth = smooth
 
     def forward(self, inputs, targets):
-        inputs = torch.sigmoid(inputs).view(-1)
-        targets = targets.view(-1)
-        intersection = (inputs * targets).sum()
-        dice_loss = 1 - (2. * intersection + self.smooth) / (inputs.sum() + targets.sum() + self.smooth)
+        inputs = torch.sigmoid(inputs).view(inputs.size(0), -1)
+        targets = targets.view(targets.size(0), -1)
+        intersection = (inputs * targets).sum(dim=1)
+        dice_loss = (1 - (2. * intersection + self.smooth) /
+                     (inputs.sum(dim=1) + targets.sum(dim=1) + self.smooth)).mean()
         bce = F.binary_cross_entropy(inputs, targets, reduction='mean')
         return 0.5 * bce + 0.5 * dice_loss
 
@@ -40,9 +41,8 @@ class ConvBlock(nn.Module):
     - Conv1D → InstanceNorm
     - Residual (skip) connection
     """
-    def __init__(self, in_channels, out_channels, kernel_size=7):
+    def __init__(self, in_channels, out_channels, kernel_size=7, padding=3):
         super(ConvBlock, self).__init__()
-        padding = "same"
 
         # First convolutional layer
         self.conv1 = nn.Conv1d(in_channels, out_channels, kernel_size, padding=padding)

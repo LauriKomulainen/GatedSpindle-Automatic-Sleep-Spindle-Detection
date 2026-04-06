@@ -1,33 +1,12 @@
-# build_dataset.py
-
-"""
-Dataset Builder for Sleep Spindle Detection
-============================================
-Preprocesses PSG data for training sleep spindle detection models.
-Supports DREAMS and MASS datasets through a unified interface.
-
-Pipeline:
-1. Discover and load raw EDF files
-2. Apply bandpass filtering and normalization
-3. Extract sleep spindle annotations from expert scorers
-4. Segment continuous signals into overlapping windows
-5. Filter windows by sleep stage (N2/N3)
-6. Save processed data as NumPy arrays
-
-Usage:
-    python build_dataset.py
-"""
+# build_dreams_data.py
 
 import json
 import logging
 import shutil
 import time
 from pathlib import Path
-
 import numpy as np
-import pyedflib
 from scipy.ndimage import label
-
 import paths
 from utils.logger import setup_logging
 from signal_processing import bandpassfilter, normalization
@@ -35,7 +14,7 @@ from utils.signal_visualization import save_model_input_examples, plot_eeg_trace
 from configs.config_loader import DATA_PARAMS, SELECTED_DATASET
 from configs.model_config import SIGNAL_VISUALIZATION_PARAMS
 
-setup_logging("data_handler.log")
+setup_logging("build_dreams_dataset.log")
 log = logging.getLogger(__name__)
 
 # Extract parameters from config
@@ -50,29 +29,16 @@ HYPNOGRAM_RESOLUTION_SEC = DATA_PARAMS["hypnogram_resolution_sec"]
 
 
 def _load_dataset_config() -> dict:
-    """Load dataset-specific loaders and configuration."""
-    if SELECTED_DATASET == "DREAMS":
-        from data_loaders import dreams_loader as loader
-        return {
-            "data_dir": paths.RAW_DREAMS_DATA_DIR,
-            "loader_module": loader,
-            "find_files": loader.find_dreams_data_files,
-            "load_patient": loader.load_dreams_patient_data,
-            "load_hypnogram": loader.load_dreams_hypnogram,
-            "viz_params": {"channel_names": ["EEG"]},
-        }
-    elif SELECTED_DATASET == "MASS":
-        from data_loaders import mass_loader as loader
-        return {
-            "data_dir": paths.RAW_MASS_DATA_DIR,
-            "loader_module": loader,
-            "find_files": loader.find_mass_data_files,
-            "load_patient": loader.load_mass_patient_data,
-            "load_hypnogram": loader.load_mass_hypnogram,
-            "viz_params": {"channel_names": DATA_PARAMS.get("channels", ["EEG C3-CLE"])},
-        }
-    else:
-        raise ValueError(f"Unknown dataset: {SELECTED_DATASET}")
+    """Load DREAMS dataset loaders and configuration."""
+    from data_loaders import dreams_loader as loader
+    return {
+        "data_dir": paths.RAW_DREAMS_DATA_DIR,
+        "loader_module": loader,
+        "find_files": loader.find_dreams_data_files,
+        "load_patient": loader.load_dreams_patient_data,
+        "load_hypnogram": loader.load_dreams_hypnogram,
+        "viz_params": {"channel_names": ["EEG"]},
+    }
 
 
 # Initialize dataset config
@@ -84,34 +50,18 @@ def get_scorer_annotations(patient_file_group: dict, sfreq: float) -> tuple:
     """Extract sleep spindle annotations from expert scorers for visualization."""
     scorer1_events, scorer2_events = [], []
 
-    if SELECTED_DATASET == "DREAMS":
-        loader = CONFIG["loader_module"]
-        for ann_file in patient_file_group.get("annotation_files", []):
-            mne_annotations = loader._load_dreams_annotations_txt(ann_file, sfreq)
-            if not mne_annotations:
-                continue
+    loader = CONFIG["loader_module"]
+    for ann_file in patient_file_group.get("annotation_files", []):
+        mne_annotations = loader._load_dreams_annotations_txt(ann_file, sfreq)
+        if not mne_annotations:
+            continue
 
-            events = list(zip(mne_annotations.onset, mne_annotations.duration))
-            filename = str(ann_file.name).lower()
-            if "scoring1" in filename:
-                scorer1_events.extend(events)
-            elif "scoring2" in filename:
-                scorer2_events.extend(events)
-
-    elif SELECTED_DATASET == "MASS":
-        try:
-            with pyedflib.EdfReader(str(patient_file_group["file_eeg"])) as f_eeg:
-                psg_offset = f_eeg.starttime_subsecond * 1e-7
-
-            for file_key, event_list in [("file_marks_1", scorer1_events), ("file_marks_2", scorer2_events)]:
-                marks_file = patient_file_group[file_key]
-                if marks_file.exists():
-                    with pyedflib.EdfReader(str(marks_file)) as f:
-                        time_adj = f.starttime_subsecond * 1e-7 - psg_offset
-                        onsets, durations = f.readAnnotations()[:2]
-                        event_list.extend(zip(onsets + time_adj, durations))
-        except Exception as e:
-            log.warning(f"Could not load MASS scorer events: {e}")
+        events = list(zip(mne_annotations.onset, mne_annotations.duration))
+        filename = str(ann_file.name).lower()
+        if "scoring1" in filename:
+            scorer1_events.extend(events)
+        elif "scoring2" in filename:
+            scorer2_events.extend(events)
 
     return scorer1_events, scorer2_events
 
@@ -166,7 +116,6 @@ def segment_data(raw, hypnogram: np.ndarray, raw_unfiltered: np.ndarray = None) 
     _, n_total = label(spindle_mask > 0)
 
     # Calculate n_kept: spindles that fall within valid sleep stages
-    # This matches the old logic where filtering is applied to the mask directly
     if hypnogram is not None:
         stage_mask = _create_stage_mask(hypnogram, signal_length, fs)
         filtered_spindle_mask = spindle_mask * stage_mask
