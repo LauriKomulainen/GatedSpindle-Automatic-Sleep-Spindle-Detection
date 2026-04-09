@@ -22,22 +22,25 @@ We normalize everything relative to the PSG file:
 
 This ensures all timestamps are in the same coordinate system.
 
-Scorer modes:
--------------
+Scorer modes (applied at dataset/evaluation time, NOT at loading time):
+-----------------------------------------------------------------------
     'E1'    -> Use only Expert 1 annotations (Spindles_E1.edf) - 19 patients
     'E2'    -> Use only Expert 2 annotations (Spindles_E2.edf) - 15 patients
     'UNION' -> Merge annotations from both experts (overlapping spindles merged)
+
+IMPORTANT: This loader always processes ALL 19 patients and returns annotations
+for ALL available scorers. The scorer_mode filtering happens downstream in
+build_dataset.py (which saves separate Y files per scorer) and dataset.py
+(which selects the correct Y file at runtime).
 """
 
 import os
 import logging
 from pathlib import Path
-
 import numpy as np
 import pyedflib
 from scipy.interpolate import interp1d
 from scipy.signal import resample_poly
-
 from configs.mass_config import DATA_PARAMS
 
 log = logging.getLogger(__name__)
@@ -46,26 +49,19 @@ log = logging.getLogger(__name__)
 CHANNEL_NAME = DATA_PARAMS['channels'][0]
 TARGET_FS = float(DATA_PARAMS['fs'])
 PAGE_DURATION = DATA_PARAMS['page_duration']
-SCORER_MODE = DATA_PARAMS.get('scorer_mode', 'UNION')  # Default to UNION
-
-# Sleep spindle duration constraints (in seconds)
-MIN_SPINDLE_DURATION = 0.3
-MAX_SPINDLE_DURATION = 3.0
-
 
 # DATA CONTAINER CLASS
 class MassRaw:
     """
     Container for processed MASS recording data.
-
-    Mimics MNE-Python's Raw object interface for compatibility
-    with downstream processing pipelines.
     """
-
     def __init__(self, signal: np.ndarray, fs: float, annotations: list):
         self._data = [signal]
         self.info = {'sfreq': fs}
         self.annotations = annotations
+
+        # Per-scorer annotations (populated by load_mass_patient_data)
+        self.annotations_by_scorer = {}
 
     def get_data(self) -> np.ndarray:
         """Return signal data as 2D array (channels x samples)."""
@@ -73,8 +69,8 @@ class MassRaw:
 
 
 # SIGNAL PROCESSING UTILITIES
+# Resample a signal from one sample rate to another using linear interpolation.
 def resample_signal_linear(signal: np.ndarray, fs_old: float, fs_new: float) -> np.ndarray:
-    """Resample signal using linear interpolation."""
     if np.isclose(fs_old, fs_new, atol=1e-5):
         return signal
 
@@ -87,17 +83,10 @@ def resample_signal_linear(signal: np.ndarray, fs_old: float, fs_new: float) -> 
 
 
 # HYPNOGRAM LOADING
+# Read sleep stage labels from Base.edf annotations.
+# Returns (hypnogram_array, first_epoch_onset_sec) or (None, 0) if no valid epochs found.
+# The time_offset shifts all onsets so they align with PSG t=0.
 def _read_hypnogram_data(path_states_file: str, time_offset: float):
-    """
-    Read sleep staging (hypnogram) from Base.edf file.
-
-    Args:
-        path_states_file: Path to Base.edf
-        time_offset: Offset to add to onsets (base_subsecond - psg_subsecond)
-
-    Returns:
-        tuple: (hypnogram_array, first_epoch_onset)
-    """
     if not os.path.isfile(path_states_file):
         return None, 0
 
@@ -125,11 +114,11 @@ def _read_hypnogram_data(path_states_file: str, time_offset: float):
     # Apply time offset to align with PSG t=0
     onsets = onsets + time_offset
 
-    # Build hypnogram array
+    # Build hypnogram array — one entry per page, indexed 0..n_pages-1
     start_time = onsets[0]
     page_indices = np.round((onsets - start_time) / PAGE_DURATION).astype(np.int32)
     n_pages = 1 + page_indices[-1]
-    hypnogram = np.full(n_pages + 1, '?', dtype='<U1')
+    hypnogram = np.full(n_pages, '?', dtype='<U1')
 
     for idx, stage in zip(page_indices, stages_char):
         if idx < len(hypnogram):
@@ -139,87 +128,66 @@ def _read_hypnogram_data(path_states_file: str, time_offset: float):
 
 
 # SPINDLE ANNOTATION PROCESSING
-def _load_spindle_annotations(
-        file_group: dict,
+# Load spindle annotations from a single scorer's EDF file (E1 or E2).
+# Aligns timestamps to PSG t=0, shifts them relative to the cropped signal start,
+# converts to sample indices, and filters out any events outside the valid range.
+# Returns shape (n_spindles, 2) with columns [onset_sample, offset_sample].
+def _load_spindle_annotations_single(
+        marks_path: str,
         psg_subsecond: float,
         crop_start_sec: float,
         n_samples_valid: int,
-        scorer_mode: str = 'UNION'
 ) -> np.ndarray:
-    """
-    Load sleep spindle annotations from expert scorers.
-
-    Args:
-        file_group: Dictionary with file paths
-        psg_subsecond: PSG subsecond offset (reference)
-        crop_start_sec: Where the cropped signal starts (seconds from PSG t=0)
-        n_samples_valid: Total valid samples after cropping
-        scorer_mode: 'E1' (Expert 1), 'E2' (Expert 2), or 'UNION' (merge both)
-
-    Returns:
-        2D array of shape (n_spindles, 2) with [onset_sample, offset_sample]
-    """
-    # Determine which files to load based on scorer_mode
-    if scorer_mode == 'E1':
-        keys_to_load = ['file_marks_1']
-    elif scorer_mode == 'E2':
-        keys_to_load = ['file_marks_2']
-    else:  # UNION
-        keys_to_load = ['file_marks_1', 'file_marks_2']
-
-    raw_marks = []
-
-    for key in keys_to_load:
-        marks_path = str(file_group[key])
-
-        if not os.path.isfile(marks_path):
-            continue
-
-        with pyedflib.EdfReader(marks_path) as f:
-            annotations = f.readAnnotations()
-            onsets = np.array(annotations[0])
-            durations = np.array(annotations[1])
-            spindle_subsecond = f.starttime_subsecond * 1e-7
-
-        if len(onsets) == 0:
-            continue
-
-        # Align to PSG t=0: add offset difference
-        time_offset = spindle_subsecond - psg_subsecond
-        onsets = onsets + time_offset
-
-        # Shift relative to cropped signal start
-        onsets = onsets - crop_start_sec
-
-        # Convert to samples
-        onset_samples = np.round(onsets * TARGET_FS).astype(int)
-        offset_samples = onset_samples + np.round(durations * TARGET_FS).astype(int)
-
-        # Filter to valid range
-        marks = np.stack((onset_samples, offset_samples), axis=1)
-        valid_mask = (marks[:, 0] >= 0) & (marks[:, 1] < n_samples_valid)
-        raw_marks.append(marks[valid_mask])
-
-    if len(raw_marks) == 0:
+    if not os.path.isfile(marks_path):
         return np.empty((0, 2), dtype=int)
 
-    # Combine all marks
-    combined = np.vstack(raw_marks)
+    with pyedflib.EdfReader(marks_path) as f:
+        annotations = f.readAnnotations()
+        onsets = np.array(annotations[0])
+        durations = np.array(annotations[1])
+        spindle_subsecond = f.starttime_subsecond * 1e-7
+
+    if len(onsets) == 0:
+        return np.empty((0, 2), dtype=int)
+
+    # Align to PSG t=0: add offset difference
+    time_offset = spindle_subsecond - psg_subsecond
+    onsets = onsets + time_offset
+
+    # Shift relative to cropped signal start
+    onsets = onsets - crop_start_sec
+
+    # Convert to samples
+    onset_samples = np.round(onsets * TARGET_FS).astype(int)
+    offset_samples = onset_samples + np.round(durations * TARGET_FS).astype(int)
+
+    # Filter to valid range
+    marks = np.stack((onset_samples, offset_samples), axis=1)
+    valid_mask = (marks[:, 0] >= 0) & (marks[:, 1] < n_samples_valid)
+    return marks[valid_mask]
+
+
+# Merge spindle annotations from two experts into a single set (UNION mode).
+# Overlapping or nearly-touching spindles (within 0.3s gap) are merged together.
+def _merge_annotations_union(marks_e1: np.ndarray, marks_e2: np.ndarray) -> np.ndarray:
+    if len(marks_e1) == 0 and len(marks_e2) == 0:
+        return np.empty((0, 2), dtype=int)
+    if len(marks_e1) == 0:
+        return marks_e2
+    if len(marks_e2) == 0:
+        return marks_e1
+
+    combined = np.vstack([marks_e1, marks_e2])
     combined = combined[combined[:, 0].argsort()]
 
     merge_gap_sec = 0.3
     gap_samples = int(merge_gap_sec * TARGET_FS)
-
-    merged = _merge_overlapping_intervals(combined, gap_samples=gap_samples)
-
-    return merged
+    return _merge_overlapping_intervals(combined, gap_samples=gap_samples)
 
 
+# Merge overlapping or nearly-touching intervals into non-overlapping segments.
+# Intervals closer than gap_samples are treated as one continuous event.
 def _merge_overlapping_intervals(intervals: np.ndarray, gap_samples: int = 0) -> np.ndarray:
-    """
-    Merge overlapping intervals into non-overlapping segments.
-    Also merges intervals that are closer than 'gap_samples' to each other.
-    """
     if len(intervals) == 0:
         return intervals
 
@@ -234,31 +202,30 @@ def _merge_overlapping_intervals(intervals: np.ndarray, gap_samples: int = 0) ->
     return np.array(merged)
 
 
+# Convert sample-based [onset, offset] pairs into annotation dicts with onset/duration in seconds.
+def _samples_to_annotations(spindle_samples: np.ndarray) -> list:
+    return [
+        {
+            'description': 'spindle',
+            'onset': onset / TARGET_FS,
+            'duration': (offset - onset) / TARGET_FS
+        }
+        for onset, offset in spindle_samples
+    ]
+
+
 # MAIN DATA LOADING FUNCTION
+# Load and preprocess a single MASS patient recording.
+# The PSG file defines t=0; all other files (Base.edf, Spindles_E1/E2.edf)
+# are time-aligned using their subsecond timestamps relative to PSG.
+# Returns a MassRaw object with signal, hypnogram, and per-scorer annotations,
+# or None if the recording can't be loaded.
 def load_mass_patient_data(file_group: dict):
-    """
-    Load and preprocess a complete MASS patient recording.
-
-    Time alignment:
-    - PSG signal is the reference (t=0)
-    - All other files are aligned using: onset += (file_subsecond - psg_subsecond)
-
-    Scorer mode (from config):
-    - 'E1': Use only Expert 1 annotations
-    - 'E2': Use only Expert 2 annotations
-    - 'UNION': Merge annotations from both experts
-
-    Args:
-        file_group: Dictionary containing file paths
-
-    Returns:
-        MassRaw object or None if loading fails
-    """
     eeg_path = str(file_group['file_eeg'])
     states_path = str(file_group['file_states'])
     patient_id = file_group['id']
 
-    log.info(f"Loading patient: {patient_id} (scorer_mode: {SCORER_MODE})")
+    log.info(f"Loading patient: {patient_id}")
 
     # 1: Load PSG signal (this is our t=0 reference)
     with pyedflib.EdfReader(eeg_path) as f:
@@ -299,70 +266,76 @@ def load_mass_patient_data(file_group: dict):
     start_sample = int(crop_start_sec * TARGET_FS)
     signal = signal[start_sample:]
 
-    # 7: Match signal length to hypnogram
+    # 6: Match signal length to hypnogram — both must cover exactly n_pages
     page_samples = int(PAGE_DURATION * TARGET_FS)
     n_pages = min(len(signal) // page_samples, len(hypnogram))
     n_samples_valid = n_pages * page_samples
 
     signal = signal[:n_samples_valid]
-    hypnogram = hypnogram[:n_pages + 1]
+    hypnogram = hypnogram[:n_pages]
 
-    # 8: Load spindle annotations (with time offsets applied)
-    spindle_samples = _load_spindle_annotations(
-        file_group, psg_subsecond, crop_start_sec, n_samples_valid,
-        scorer_mode=SCORER_MODE
+    # 7: Load spindle annotations from ALL available scorers
+    e1_path = str(file_group['file_marks_1'])
+    e2_path = str(file_group['file_marks_2'])
+
+    marks_e1 = _load_spindle_annotations_single(
+        e1_path, psg_subsecond, crop_start_sec, n_samples_valid
     )
+    marks_e2 = _load_spindle_annotations_single(
+        e2_path, psg_subsecond, crop_start_sec, n_samples_valid
+    )
+    marks_union = _merge_annotations_union(marks_e1, marks_e2)
 
-    annotations = [
-        {
-            'description': 'spindle',
-            'onset': onset / TARGET_FS,
-            'duration': (offset - onset) / TARGET_FS
-        }
-        for onset, offset in spindle_samples
-    ]
+    # 8: Build annotation dicts for each scorer mode
+    annotations_e1 = _samples_to_annotations(marks_e1)
+    annotations_e2 = _samples_to_annotations(marks_e2)
+    annotations_union = _samples_to_annotations(marks_union)
 
     # 9: Create and return data container
-    raw = MassRaw(signal, TARGET_FS, annotations)
+    # Default annotations = UNION for backward compatibility
+    raw = MassRaw(signal, TARGET_FS, annotations_union)
     raw.info['crop_start_sec'] = crop_start_sec
     raw.info['psg_subsecond'] = psg_subsecond
     raw.info['base_subsecond'] = base_subsecond
-    raw.info['scorer_mode'] = SCORER_MODE
 
-    log.info(f"  Loaded {len(annotations)} spindles, {n_pages} pages")
+    # Store per-scorer annotations
+    raw.annotations_by_scorer = {
+        'E1': annotations_e1,
+        'E2': annotations_e2,
+        'UNION': annotations_union,
+    }
+
+    # Store per-scorer sample arrays (for build_dataset to create masks)
+    raw.info['marks_by_scorer'] = {
+        'E1': marks_e1,
+        'E2': marks_e2,
+        'UNION': marks_union,
+    }
+
+    log.info(
+        f"  Spindles loaded - E1: {len(annotations_e1)}, "
+        f"E2: {len(annotations_e2)}, UNION: {len(annotations_union)}, "
+        f"{n_pages} pages"
+    )
 
     return raw
 
 
 # UTILITY FUNCTIONS
+# Load only the hypnogram (sleep stage labels) for a patient, without the EEG signal.
 def load_mass_hypnogram(file_group: dict) -> np.ndarray:
-    """Load only the hypnogram for a patient."""
     states_path = str(file_group['file_states'])
-
-    # For standalone hypnogram loading, offset doesn't matter for sleep stages
     hypnogram, _ = _read_hypnogram_data(states_path, 0)
     return hypnogram
 
 
+# Scan the data directory and return a list of file groups for all valid MASS patients.
+# A patient is valid if PSG, Base, and at least E1 annotation files exist.
+# All 19 patients are included; E2 availability is tracked but never excludes a patient.
 def find_mass_data_files(data_dir: str) -> list:
-    """
-    Discover all valid MASS dataset files in a directory.
-
-    Patient inclusion depends on scorer_mode:
-    - 'E1': Include patients that have Spindles_E1.edf (all 19)
-    - 'E2': Include patients that have Spindles_E2.edf (15 patients)
-    - 'UNION': Include patients that have both Spindles_E1 and Spindles_E2 files
-
-    Args:
-        data_dir: Path to directory containing MASS EDF files
-
-    Returns:
-        List of file group dictionaries
-    """
     data_dir = Path(data_dir)
     file_groups = []
 
-    # Check all 19 patients (01-02-0001 to 01-02-0019)
     for pid in range(1, 20):
         patient_str = f"01-02-{pid:04d}"
 
@@ -371,30 +344,22 @@ def find_mass_data_files(data_dir: str) -> list:
         e1_path = data_dir / f"{patient_str} Spindles_E1.edf"
         e2_path = data_dir / f"{patient_str} Spindles_E2.edf"
 
-        # Must have PSG and Base files
+        # Must have PSG, Base, and at least E1 file
         if not psg_path.exists() or not base_path.exists():
             continue
+        if not e1_path.exists():
+            log.warning(f"  Skipping {patient_str}: no Spindles_E1.edf")
+            continue
 
-        # Check spindle files based on scorer_mode
-        has_e1 = e1_path.exists()
-        has_e2 = e2_path.exists()
+        file_groups.append({
+            'id': patient_str,
+            'file_eeg': psg_path,
+            'file_states': base_path,
+            'file_marks_1': e1_path,
+            'file_marks_2': e2_path,
+            'has_e2': e2_path.exists(),
+        })
 
-        include_patient = False
-        if SCORER_MODE == 'E1':
-            include_patient = has_e1
-        elif SCORER_MODE == 'E2':
-            include_patient = has_e2
-        else:  # UNION
-            include_patient = has_e1 and has_e2
-
-        if include_patient:
-            file_groups.append({
-                'id': patient_str,
-                'file_eeg': psg_path,
-                'file_states': base_path,
-                'file_marks_1': e1_path,
-                'file_marks_2': e2_path
-            })
-
-    log.info(f"Found {len(file_groups)} valid MASS recordings for scorer_mode='{SCORER_MODE}'")
+    n_with_e2 = sum(1 for fg in file_groups if fg['has_e2'])
+    log.info(f"Found {len(file_groups)} MASS recordings ({n_with_e2} with E2 annotations)")
     return file_groups
