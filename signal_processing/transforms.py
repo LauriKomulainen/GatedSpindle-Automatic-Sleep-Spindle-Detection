@@ -38,22 +38,30 @@ def compute_stft_sigma_channel(raw_signal_np, fs, nperseg=128, target_len=None):
 
 def compute_input_channels(raw_signal_np, fs):
     """
-    Computes input channels: Raw, Sigma, Hilbert Envelope, STFT Sigma Power.
+    Compute multi-channel input: Raw EEG, Sigma band, Hilbert Envelope.
+
+    FIX: Hilbert envelope is now computed from the UN-normalized sigma signal
+    to preserve amplitude contrast. Each channel is normalized exactly once.
+    Previously, the sigma signal was normalized before Hilbert computation,
+    and the envelope was normalized again — double normalization compressed
+    spindle amplitude peaks and hurt recall.
     """
     channels = []
 
-    # CH1: Raw EEG
+    # CH1: Raw EEG (already filtered + normalized during preprocessing)
     ch1 = torch.tensor(raw_signal_np, dtype=torch.float32).unsqueeze(0)
     channels.append(ch1)
 
-    # CH2: Sigma (11-16 Hz)
-    sigma_signal = apply_bandpass_filter(raw_signal_np, fs, 11, 16, order=4)
-    sigma_signal = normalize_data(sigma_signal)
-    ch2 = torch.tensor(sigma_signal.copy(), dtype=torch.float32).unsqueeze(0)
+    # Sigma bandpass filter
+    sigma_raw = apply_bandpass_filter(raw_signal_np, fs, 11, 16, order=4)
+
+    # CH2: Sigma band — normalize once
+    sigma_norm = normalize_data(sigma_raw)
+    ch2 = torch.tensor(sigma_norm.copy(), dtype=torch.float32).unsqueeze(0)
     channels.append(ch2)
 
-    # CH3: Hilbert Envelope
-    analytic_signal = hilbert(sigma_signal)
+    # CH3: Hilbert envelope — computed from UN-normalized sigma, then normalized once
+    analytic_signal = hilbert(sigma_raw)
     amplitude_envelope = np.abs(analytic_signal)
     env_norm = normalize_data(amplitude_envelope)
     ch3 = torch.tensor(env_norm.copy(), dtype=torch.float32).unsqueeze(0)
@@ -64,9 +72,11 @@ def compute_input_channels(raw_signal_np, fs):
 
 class RandomAugment1D:
     """
-    Augmentation that operates on BOTH signal and mask jointly
-    to maintain temporal alignment.
+    Applies random augmentations to 1D EEG signal and mask.
+    Previously only the mask was zeroed, which created corrupted negative examples
+    where spindle-like waveforms were paired with zero masks at boundaries.
     """
+
     def __init__(self, p=0.5):
         self.p = p
 
@@ -80,24 +90,31 @@ class RandomAugment1D:
             noise = torch.randn_like(signal) * 0.03
             signal = signal + noise
 
+        # Invert the signal vertically with 50% probability
+        if random.random() < 0.5:
+            signal = signal * -1.0
+        # --------
+
         # Time shift - apply SAME shift to both signal and mask
         if random.random() < 0.5:
             shift = random.randint(-50, 50)
             signal = torch.roll(signal, shift, dims=-1)
             if mask is not None:
                 mask = torch.roll(mask, shift, dims=-1)
-                # Zero out the wrapped-around region so we don't
-                # create false positives at boundaries
-                if shift > 0:
+
+            # Zero out wrapped region in BOTH signal and mask
+            if shift > 0:
+                signal[:, :shift] = 0.0
+                if mask is not None:
                     mask[:shift] = 0.0
-                elif shift < 0:
+            elif shift < 0:
+                signal[:, shift:] = 0.0
+                if mask is not None:
                     mask[shift:] = 0.0
 
         # Channel dropout - randomly zero one input channel
         if random.random() < 0.3:
             ch_idx = random.randint(0, signal.shape[0] - 1)
-            signal[ch_idx] = 0.0
+            signal[ch_idx, :] = 0.0
 
-        if mask is not None:
-            return signal, mask
-        return signal
+        return signal, mask
