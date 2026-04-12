@@ -38,7 +38,7 @@ Techniques for improved stability and generalization:
     
 The ensemble is implemented by averaging the raw **logits** (pre-activation outputs) of both models before applying the sigmoid function. This "logit averaging" approach creates a smoother decision boundary and prevents a single overconfident model from dominating the prediction, resulting in more reliable event detection than simple probability averaging.
 
-## Project Structure
+## Project Structure (NOTE! Outdated)
 
 ```text
 ├── configs/
@@ -93,66 +93,7 @@ To ensure reproducibility, please follow these setup steps.
 Pip install -r requirements.txt
 ```
 
-### 2. Data Setup
-
-1. Download the DREAMS Sleep Spindle Database. Other datasets are not currently supported without code changes.
-2. Create a folder at data/DREAMS in the project root directory.
-3. Move all downloaded files (both .edf recordings and .txt annotations) directly into this folder.
-4. Open `paths.py` and ensure the RAW_DREAMS_DATA_DIR variable matches your data location (default is data/DREAMS).
-
-### 3. Data Preprocessing
-
-Before training, the raw EEG data must be converted into processed tensors (.npy format).
-```bash
-python build_dataset.py
-```
-* This script performs bandpass filtering (0.3-30Hz), segmentation, and Z-score normalization.
-* Processed files are saved to the data/processed directory (defined in paths.py).
-* If you modify filtering parameters in `dreams_config.py`, you must re-run this script to regenerate the data.
-
-### 4. Model Training
-
-Run the main training loop to start the Leave-One-Subject-Out (LOSO) cross-validation. For detailed benchmarking, reproducibility, and seed configuration, see the **Performance Evaluation** section below.
-
-## Performance Evaluation
-
-To ensure the reliability of the results and fair comparison with existing literature, the model is evaluated using a Leave-One-Subject-Out (LOSO) cross-validation protocol.
-
-### 1. Standard benchmark (No shuffle)
-This experiment evaluates the stability of the model across different random initializations (random seeds) while keeping the subject folds fixed. This setup enables direct and fair comparison.
-
-The initial random seed is selected uniformly at random from the range **1–99,999**. After each complete LOSO iteration, the seed is incremented by one. This process is repeated until a total of three (--repeats 3) LOSO runs are completed. To reproduce the reported results, execute the following command:
-```bash
-python main.py --mode train --repeats 3 --seed 28273
-```
-Average performance of 3 runs (No shuffle):
-* F1-score: 0.807 ± 0.007
-* Precision: 0.811 ± 0.011
-* Recall: 0.810 ± 0.005
-* mIoU: 0.746 ± 0.004
-
-For non-deterministic verification runs, the `--seed` argument may be omitted. When unspecified, the initial seed is sampled uniformly at random from **1–99,999**, and subsequently incremented by one after each complete LOSO cycle.
-```bash
-python main.py --mode train --repeats 3 --seed
-```
-
-### 2. Reference Single-Run Performance (Seed = 28273)
-
-This experiment reports the performance of a single deterministic Leave-One-Subject-Out (LOSO) run using a fixed random initialization.
-
-The model is trained and evaluated using a fixed random seed (`seed = 28273`) and a single LOSO
-cycle (`--repeats 1`). Unlike the standard benchmark, this experiment does not assess
-stability across random initializations.
-```bash
-python main.py --mode train --repeats 1 --seed 28273
-```
-
-Best performance from single run:
-* F1-score: 0.816 ± 0.026
-* Precision: 0.821 ± 0.037
-* Recall: 0.814 ± 0.048
-* mIoU: 0.749 ± 0.040
-
+### 2. Other instructions TBD...
 
 ## License & Citation
 This project is open-source and available under the MIT License (see the LICENSE file for details). You are free to use, modify, and distribute this software for research and development purposes.
