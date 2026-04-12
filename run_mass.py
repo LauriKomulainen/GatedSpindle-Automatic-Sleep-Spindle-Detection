@@ -14,14 +14,15 @@ import numpy as np
 import paths
 from utils.logger import setup_logging
 from core.dataset import get_dataloaders
-from core.model import GatedUNet, train_model
+from core.train_model import train_model
+from core.model import GatedUNet
 from core.evaluation import (
     compute_event_based_metrics,
     find_optimal_threshold,
     aggregate_and_save_summary,
     save_final_experiment_summary,
 )
-from configs.model_config import INFERENCE_PARAMS, TRAINING_PARAMS
+from configs.model_config import INFERENCE_PARAMS, TRAINING_PARAMS, POST_PROCESSING_PARAMS
 from configs.config_loader import DATA_PARAMS, CV_CONFIG, SELECTED_DATASET
 
 
@@ -90,9 +91,9 @@ def log_metrics(logger, label: str, metrics: dict):
 
 def log_params(logger, name: str, params: dict):
     """Log a parameter dictionary."""
-    logger.info(f"--- {name} ---")
+    logger.info(f"{name} :")
     for key, value in params.items():
-        logger.info(f"  {key:<25}: {value}")
+        logger.info(f"{key:<25}: {value}")
 
 
 class EnsembleWrapper(nn.Module):
@@ -114,10 +115,7 @@ class EnsembleWrapper(nn.Module):
         return self
 
 
-# =============================================================================
 # Cross-Validation Split Strategies
-# =============================================================================
-
 def generate_seed_folds(subject_ids: list, n_folds: int = 5, seed: int = 0):
     """
     Generate random CV folds matching SEED's cv_split logic.
@@ -425,6 +423,9 @@ def main():
     log.info(f"Dataset: {SELECTED_DATASET}")
     log_params(log, "Training params", TRAINING_PARAMS)
     log_params(log, "Data params", DATA_PARAMS)
+    log_params(log, "Data params", INFERENCE_PARAMS)
+    log_params(log, "Data params", POST_PROCESSING_PARAMS)
+
 
     # Filter valid subjects
     scorer_mode = DATA_PARAMS.get("scorer_mode", None)

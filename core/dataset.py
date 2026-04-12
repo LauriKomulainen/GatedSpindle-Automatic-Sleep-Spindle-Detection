@@ -19,15 +19,16 @@ import logging
 
 import numpy as np
 import torch
+from features import compute_input_channels
+from data_augmentation import RandomAugment1D
 from torch.utils.data import Dataset, DataLoader, ConcatDataset
-from signal_processing.transforms import compute_input_channels, RandomAugment1D
 from configs.config_loader import DATA_PARAMS
 
 log = logging.getLogger(__name__)
 
 
 class SpindleDataset(Dataset):
-    """Dataset for sleep spindle detection with optional augmentation."""
+    """Dataset for sleep spindle detection with data augmentation."""
 
     def __init__(self, x_path: str, y_path: str, augment: bool = False):
         self.x_path = x_path

@@ -10,7 +10,7 @@ from tqdm import tqdm
 from typing import Dict
 from postprocessing.postprocessing import stitch_predictions_1d, find_events_dual_thresh, calculate_iou
 from utils.reporting import generate_detailed_csv
-from configs.model_config import POST_PROCESSING_PARAMS, INFERENCE_PARAMS
+from configs.model_config import POST_PROCESSING_PARAMS, INFERENCE_PARAMS, TRAINING_PARAMS
 from configs.config_loader import DATA_PARAMS
 
 log = logging.getLogger(__name__)
@@ -129,6 +129,7 @@ def compute_event_based_metrics(model,
                                 subject_id: str = "unknown",
                                 output_dir: str = ".") -> Dict[str, float]:
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    use_gating = TRAINING_PARAMS.get('use_gating_branch', True)
 
     if torch.backends.mps.is_available(): device = torch.device('mps')
     model.to(device)
@@ -141,12 +142,16 @@ def compute_event_based_metrics(model,
         for inputs, masks, labels in tqdm(data_loader, desc=f"Evaluating ({subject_id})"):
             inputs = inputs.to(device)
             mask_logits, gate_logits = model(inputs)
-            final_prob = torch.sigmoid(mask_logits) * torch.sigmoid(gate_logits).unsqueeze(2)
+            final_prob = torch.sigmoid(mask_logits)
+            if use_gating:
+                final_prob = final_prob * torch.sigmoid(gate_logits).unsqueeze(2)
 
             # TTA
             inputs_flip = torch.flip(inputs, dims=[2])
             m_f, g_f = model(inputs_flip)
-            final_prob_flip = torch.flip(torch.sigmoid(m_f), dims=[2]) * torch.sigmoid(g_f).unsqueeze(2)
+            final_prob_flip = torch.flip(torch.sigmoid(m_f), dims=[2])
+            if use_gating:
+                final_prob_flip = final_prob_flip * torch.sigmoid(g_f).unsqueeze(2)
 
             avg_prob = (final_prob + final_prob_flip) / 2.0
             all_probs_list.append(avg_prob.cpu().float())
