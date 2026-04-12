@@ -17,13 +17,13 @@ Usage:
 # =============================================================================
 DATA_PARAMS = {
     'fs': 200.0,
-    'window_sec': 20.0,
-    'overlap_sec': 10.0,
+    'window_sec': 5.0,
+    'overlap_sec': 2.5,
     'lowcut': 0.3,
     'highcut': 30.0,
     'filter_order': 4,
     'use_instance_norm': True,
-    'included_stages': ['2', '3'],
+    'included_stages': ['2'],
     'hypnogram_resolution_sec': 20.0,
     'page_duration': 20,
 

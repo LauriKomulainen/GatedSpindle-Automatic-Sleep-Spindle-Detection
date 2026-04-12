@@ -19,8 +19,8 @@ import logging
 
 import numpy as np
 import torch
-from features import compute_input_channels
-from data_augmentation import RandomAugment1D
+from core.features import compute_input_channels
+from core.data_augmentation import RandomAugment1D
 from torch.utils.data import Dataset, DataLoader, ConcatDataset
 from configs.config_loader import DATA_PARAMS
 

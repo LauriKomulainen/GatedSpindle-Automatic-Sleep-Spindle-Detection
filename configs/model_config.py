@@ -2,12 +2,15 @@ TRAINING_PARAMS = {
     'batch_size': 16,
     'learning_rate': 1e-4,
     'dropout_rate': 0.2,
-    'optimizer_type': 'Adam',
     'weight_decay': 1e-4,
     'num_epochs': 200,
     'early_stopping_patience': 25,
-    'use_swa': True
+    'use_swa': True,
+    'use_gating_branch': False,
+    'seg_loss_weight': 0.85,
+    'kernel_size': 11,
 }
+TRAINING_PARAMS['padding'] = (TRAINING_PARAMS['kernel_size'] - 1) // 2
 
 INFERENCE_PARAMS = {
     'iou_threshold': 0.2,
@@ -23,5 +26,6 @@ POST_PROCESSING_PARAMS = {
 }
 
 SIGNAL_VISUALIZATION_PARAMS = {
-    'channel_names': ["EEG (0.3-30Hz)", "Sigma (11-16Hz)", "Hilbert Envelope"]
+    'channel_names': ["EEG (0.3-30Hz)", "Sigma (11-16Hz)", "Hilbert Envelope"],
+    'input_examples': 2
 }

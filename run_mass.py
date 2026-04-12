@@ -512,7 +512,6 @@ def main():
                     model,
                     train_loader,
                     val_loader,
-                    TRAINING_PARAMS["optimizer_type"],
                     TRAINING_PARAMS["learning_rate"],
                     TRAINING_PARAMS["num_epochs"],
                     TRAINING_PARAMS["early_stopping_patience"],

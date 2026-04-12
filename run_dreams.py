@@ -66,7 +66,7 @@ def log_metrics(logger, label: str, metrics: dict):
 
 def log_params(logger, name: str, params: dict):
     """Log a parameter dictionary."""
-    logger.info(f"--- {name} ---")
+    logger.info(f"{name} :")
     for key, value in params.items():
         logger.info(f"  {key:<25}: {value}")
 
@@ -302,7 +302,6 @@ def main():
                     model,
                     train_loader,
                     val_loader,
-                    TRAINING_PARAMS["optimizer_type"],
                     TRAINING_PARAMS["learning_rate"],
                     TRAINING_PARAMS["num_epochs"],
                     TRAINING_PARAMS["early_stopping_patience"],

@@ -7,10 +7,12 @@ from core.model import DiceBCELoss
 from torch.optim.swa_utils import AveragedModel, SWALR
 from configs.model_config import TRAINING_PARAMS
 use_gating = TRAINING_PARAMS.get('use_gating_branch', True)
+seg_weight = TRAINING_PARAMS.get('seg_loss_weight', 0.85)
+cls_weight = 1.0 - seg_weight
 
 log = logging.getLogger(__name__)
 
-def train_model(model, train_loader, val_loader, optimizer_type, learning_rate, num_epochs, early_stopping_patience,
+def train_model(model, train_loader, val_loader, learning_rate, num_epochs, early_stopping_patience,
                 output_dir, use_swa):
 
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -20,8 +22,7 @@ def train_model(model, train_loader, val_loader, optimizer_type, learning_rate, 
     weight_decay = TRAINING_PARAMS.get('weight_decay', 1e-2)
 
     # Optimizer
-    if optimizer_type == 'Adam':
-        optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate, weight_decay=weight_decay)
+    optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate, weight_decay=weight_decay)
 
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
         optimizer, mode='min', factor=0.5, patience=10, min_lr=1e-6
@@ -65,7 +66,7 @@ def train_model(model, train_loader, val_loader, optimizer_type, learning_rate, 
             loss_seg = criterion_seg(mask_logits.squeeze(1), y_mask.float())
             if use_gating:
                 loss_cls = criterion_cls(gate_logits, y_label)
-                loss = 0.85 * loss_seg + 0.15 * loss_cls
+                loss = seg_weight * loss_seg + cls_weight * loss_cls
             else:
                 loss = loss_seg
 
@@ -94,7 +95,7 @@ def train_model(model, train_loader, val_loader, optimizer_type, learning_rate, 
                 l_seg = criterion_seg(mask_logits.squeeze(1), y_mask.float())
                 if use_gating:
                     l_cls = criterion_cls(gate_logits, y_label)
-                    val_loss += (0.85 * l_seg + 0.15 * l_cls).item()
+                    val_loss += (seg_weight * l_seg + cls_weight * l_cls).item()
                 else:
                     val_loss += l_seg.item()
 
