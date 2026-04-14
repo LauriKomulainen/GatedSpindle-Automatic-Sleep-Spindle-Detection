@@ -23,7 +23,7 @@ from core.evaluation import (
     save_final_experiment_summary,
 )
 from configs.model_config import INFERENCE_PARAMS, TRAINING_PARAMS, POST_PROCESSING_PARAMS
-from configs.config_loader import DATA_PARAMS, CV_CONFIG
+from configs.dreams_config import DATA_PARAMS, CV_CONFIG
 
 
 def set_seed(seed: int):
@@ -155,7 +155,7 @@ def evaluate_fold(fold_dir, test_loader, val_loader, num_channels, identifier, u
 
     # Evaluate best model
     save_dir = fold_dir if mode == "none" else None
-    metrics_best = compute_event_based_metrics(model_best, test_loader, threshold, f"{identifier}_best", save_dir)
+    metrics_best = compute_event_based_metrics(model_best, test_loader, threshold, DATA_PARAMS, f"{identifier}_best", save_dir)
     log_metrics(logger, "BEST:", metrics_best)
 
     metrics_swa, metrics_ens, model_swa = None, None, None
@@ -168,12 +168,12 @@ def evaluate_fold(fold_dir, test_loader, val_loader, num_channels, identifier, u
             model_swa.load_state_dict(torch.load(swa_path, map_location=device))
 
             save_dir = fold_dir if mode == "swa" else None
-            metrics_swa = compute_event_based_metrics(model_swa, test_loader, threshold, f"{identifier}_swa", save_dir)
+            metrics_swa = compute_event_based_metrics(model_swa, test_loader, threshold, DATA_PARAMS, f"{identifier}_swa", save_dir)
             log_metrics(logger, "SWA:", metrics_swa)
 
             ensemble = EnsembleWrapper(model_best, model_swa).to(device)
             save_dir = fold_dir if mode == "ensemble" else None
-            metrics_ens = compute_event_based_metrics(ensemble, test_loader, threshold, f"{identifier}_ens", save_dir)
+            metrics_ens = compute_event_based_metrics(ensemble, test_loader, threshold, DATA_PARAMS, f"{identifier}_ens", save_dir)
             log_metrics(logger, "ENS:", metrics_ens)
         else:
             logger.info("SWA model not found, skipping SWA/Ensemble evaluation")

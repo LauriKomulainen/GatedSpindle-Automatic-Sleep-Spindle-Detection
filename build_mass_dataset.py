@@ -12,11 +12,13 @@ import paths
 from utils.logger import setup_logging
 from signal_processing import bandpassfilter, normalization
 from utils.signal_visualization import save_model_input_examples, plot_eeg_trace
-from configs.config_loader import DATA_PARAMS, SELECTED_DATASET
+from configs.mass_config import DATA_PARAMS
 from configs.model_config import SIGNAL_VISUALIZATION_PARAMS
+from data_loaders import mass_loader
 
 setup_logging("build_mass_dataset.log")
 log = logging.getLogger(__name__)
+log.info("Dataset: MASS")
 
 # Extract parameters from config
 LOWCUT = DATA_PARAMS["lowcut"]
@@ -30,24 +32,6 @@ HYPNOGRAM_RESOLUTION_SEC = DATA_PARAMS["hypnogram_resolution_sec"]
 
 # All scorer modes to generate masks for
 SCORER_MODES = ['E1', 'E2', 'UNION']
-
-
-def _load_dataset_config() -> dict:
-    """Load MASS dataset loaders and configuration."""
-    from data_loaders import mass_loader as loader
-    return {
-        "data_dir": paths.RAW_MASS_DATA_DIR,
-        "loader_module": loader,
-        "find_files": loader.find_mass_data_files,
-        "load_patient": loader.load_mass_patient_data,
-        "load_hypnogram": loader.load_mass_hypnogram,
-        "viz_params": {"channel_names": DATA_PARAMS.get("channels", ["EEG C3-CLE"])},
-    }
-
-
-# Initialize dataset config
-CONFIG = _load_dataset_config()
-log.info(f"Dataset selected: {SELECTED_DATASET}")
 
 
 def get_scorer_annotations(patient_file_group: dict, sfreq: float) -> tuple:
@@ -219,7 +203,7 @@ def _process_patient(patient_file_group: dict, processed_dir: Path, plots_dir: P
     log.info(f"Processing patient: {patient_id}")
 
     # Load raw data
-    raw = CONFIG["load_patient"](patient_file_group)
+    raw = mass_loader.load_mass_patient_data(patient_file_group)
     if raw is None:
         log.warning(f"Failed to load data for {patient_id}")
         return None
@@ -246,7 +230,7 @@ def _process_patient(patient_file_group: dict, processed_dir: Path, plots_dir: P
     raw._data[0] = filtered
 
     # Load hypnogram and segment
-    hypnogram = CONFIG["load_hypnogram"](patient_file_group)
+    hypnogram = mass_loader.load_mass_hypnogram(patient_file_group)
     if hypnogram is None:
         log.warning(f"  No hypnogram for {patient_id}, skipping stage filtering")
 
@@ -320,8 +304,8 @@ def _process_patient(patient_file_group: dict, processed_dir: Path, plots_dir: P
 
 
 def main():
-    log.info(f"Starting preprocessing for: {SELECTED_DATASET}")
-    log.info(f"Raw data: {CONFIG['data_dir']}")
+    log.info(f"Starting preprocessing for: MASS")
+    log.info(f"Raw data: {paths.RAW_MASS_DATA_DIR}")
     log.info(f"Output: {paths.PROCESSED_DATA_DIR}")
 
     log.info(f"Will generate masks for ALL scorer modes: {SCORER_MODES}")
@@ -330,9 +314,9 @@ def main():
     start_time = time.time()
     processed_dir, plots_dir = _prepare_directories()
 
-    patient_list = CONFIG["find_files"](CONFIG["data_dir"])
+    patient_list = mass_loader.find_mass_data_files(paths.RAW_MASS_DATA_DIR)
     if not patient_list:
-        log.error(f"No valid data files found in {CONFIG['data_dir']}")
+        log.error(f"No valid data files found in {paths.RAW_MASS_DATA_DIR}")
         return
 
     log.info(f"Found {len(patient_list)} patients")

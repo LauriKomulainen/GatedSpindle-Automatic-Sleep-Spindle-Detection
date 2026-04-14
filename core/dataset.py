@@ -4,7 +4,7 @@
 Dataset module for sleep spindle detection.
 
 Supports runtime scorer mode selection: the correct Y mask file is loaded
-based on DATA_PARAMS['scorer_mode'] without needing to rebuild the dataset.
+based on data_params['scorer_mode'] without needing to rebuild the dataset.
 
 File naming convention:
     {subject_id}_X_1D.npy       - Signal windows (always present)
@@ -22,7 +22,6 @@ import torch
 from core.features import compute_input_channels
 from core.data_augmentation import RandomAugment1D
 from torch.utils.data import Dataset, DataLoader, ConcatDataset
-from configs.config_loader import DATA_PARAMS
 
 log = logging.getLogger(__name__)
 
@@ -30,13 +29,13 @@ log = logging.getLogger(__name__)
 class SpindleDataset(Dataset):
     """Dataset for sleep spindle detection with data augmentation."""
 
-    def __init__(self, x_path: str, y_path: str, augment: bool = False):
+    def __init__(self, x_path: str, y_path: str, fs: float, augment: bool = False):
         self.x_path = x_path
         self.y_path = y_path
         self.x_mmap = np.load(x_path, mmap_mode="r")
         self.y_mmap = np.load(y_path, mmap_mode="r")
         self.length = self.x_mmap.shape[0]
-        self.fs = DATA_PARAMS["fs"]
+        self.fs = fs
         self.augment = augment
         self.augmentor = RandomAugment1D(p=0.5) if augment else None
 
@@ -112,14 +111,19 @@ def get_dataloaders(
     train_subject_ids: list,
     val_subject_ids: list,
     test_subject_ids: list,
+    data_params: dict = None,
 ) -> tuple[DataLoader, DataLoader, DataLoader]:
     """
     Create train, validation, and test dataloaders.
 
     Automatically selects the correct Y mask file based on
-    DATA_PARAMS['scorer_mode']. No dataset rebuild needed.
+    data_params['scorer_mode']. No dataset rebuild needed.
     """
-    scorer_mode = DATA_PARAMS.get("scorer_mode", None)
+    if data_params is None:
+        data_params = {}
+
+    scorer_mode = data_params.get("scorer_mode", None)
+    fs = data_params.get("fs", 200.0)
 
     # Filter to valid subjects only
     all_requested = set(train_subject_ids + val_subject_ids + test_subject_ids)
@@ -145,7 +149,7 @@ def get_dataloaders(
     # Helper to create dataset for a subject
     def make_dataset(sid: str, augment: bool = False) -> SpindleDataset:
         x_path, y_path = _get_data_paths(processed_data_dir, sid, scorer_mode)
-        return SpindleDataset(x_path, y_path, augment=augment)
+        return SpindleDataset(x_path, y_path, fs=fs, augment=augment)
 
     # Build datasets
     train_ds = ConcatDataset([make_dataset(s, augment=True) for s in train_ids]) if train_ids else []

@@ -10,7 +10,6 @@ from tqdm import tqdm
 from typing import Dict
 from postprocessing.postprocessing import stitch_predictions_1d, find_events_dual_thresh, calculate_iou
 from configs.model_config import POST_PROCESSING_PARAMS, INFERENCE_PARAMS, TRAINING_PARAMS
-from configs.config_loader import DATA_PARAMS
 
 log = logging.getLogger(__name__)
 
@@ -125,16 +124,17 @@ def save_final_experiment_summary(grand_results: Dict[str, list],
 def compute_event_based_metrics(model,
                                 data_loader,
                                 threshold: float,
+                                data_params: dict,
                                 subject_id: str = "unknown",
                                 output_dir: str = ".") -> Dict[str, float]:
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    use_gating = TRAINING_PARAMS.get('use_gating_branch', True)
+    use_gating = TRAINING_PARAMS.get('use_gating_branch')
 
     if torch.backends.mps.is_available(): device = torch.device('mps')
     model.to(device)
     model.eval()
-    fs = DATA_PARAMS['fs']
-    step_samples = int((DATA_PARAMS['window_sec'] - DATA_PARAMS['overlap_sec']) * fs)
+    fs = data_params['fs']
+    step_samples = int((data_params['window_sec'] - data_params['overlap_sec']) * fs)
     all_probs_list, all_masks_list = [], []
 
     with torch.no_grad():

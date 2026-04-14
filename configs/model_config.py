@@ -3,18 +3,18 @@ TRAINING_PARAMS = {
     'learning_rate': 1e-4,
     'dropout_rate': 0.2,
     'weight_decay': 1e-4,
-    'num_epochs': 30,
-    'early_stopping_patience': 8,
+    'num_epochs': 200,
+    'early_stopping_patience': 25,
     'use_swa': True,
     'use_gating_branch': True,
-    'seg_loss_weight': 0.85,
+    'seg_loss_weight': 0.6,
     'kernel_size': 11,
 }
 TRAINING_PARAMS['padding'] = (TRAINING_PARAMS['kernel_size'] - 1) // 2
 
 INFERENCE_PARAMS = {
     'iou_threshold': 0.2,
-    'fixed_threshold': 0.5,
+    'fixed_threshold': 0.85,
     'inference_mode': 'ensemble', # Options: none (best), swa, ensemble
 }
 

@@ -13,13 +13,11 @@ import numpy as np
 import logging
 import matplotlib.pyplot as plt
 from scipy.ndimage import label, find_objects
-from core.dataset import compute_input_channels
-from configs.config_loader import DATA_PARAMS
+from core.features import compute_input_channels
 from configs.model_config import SIGNAL_VISUALIZATION_PARAMS
 
 log = logging.getLogger(__name__)
 
-WINDOW_SEC = DATA_PARAMS['window_sec']
 CHANNEL_NAMES = SIGNAL_VISUALIZATION_PARAMS.get(
     'channel_names', ['EEG', 'Sigma', 'Hilbert Envelope']
 )
@@ -77,7 +75,8 @@ def save_model_input_examples(x_data, y_data, raw_windows, subject_id, save_dir,
         return
 
     chosen_indices = _select_example_indices(has_spindle_indices, n_examples)
-    t_axis = np.linspace(0, WINDOW_SEC, x_data.shape[1])
+    window_sec = x_data.shape[1] / fs
+    t_axis = np.linspace(0, window_sec, x_data.shape[1])
 
     for i, idx in enumerate(chosen_indices):
         raw_signal = x_data[idx]
