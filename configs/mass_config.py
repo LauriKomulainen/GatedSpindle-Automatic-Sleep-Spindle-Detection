@@ -2,19 +2,9 @@
 
 """
 MASS Dataset Configuration
-===========================
-Supports multiple cross-validation strategies and scorer modes
-for fair comparison against published methods (SEED, Spindle-UMamba).
-
-Usage:
-    - Set 'scorer_mode' to 'E1', 'E2', or 'UNION'
-    - Set CV_CONFIG['cv_strategy'] to 'seed_15', 'umamba_19', 'kfold', or 'loso'
-    - build_dataset.py processes all 19 patients once (no rebuild needed for scorer change)
 """
 
-# =============================================================================
 # 1. Data & Preprocessing Parameters
-# =============================================================================
 DATA_PARAMS = {
     'fs': 200.0,
     'window_sec': 5.0,
@@ -28,7 +18,6 @@ DATA_PARAMS = {
     'page_duration': 20,
 
     # Scorer mode: 'E1' = Expert 1 only, 'E2' = Expert 2 only, 'UNION' = merge both
-    # No rebuild needed - dataset.py selects the correct Y file at runtime
     'scorer_mode': 'E1',
 
     # All 19 MASS-SS2 subjects (build_dataset processes all of them)
@@ -44,18 +33,11 @@ DATA_PARAMS = {
     'channels': ['EEG C3-CLE'],
 }
 
-
-# =============================================================================
-# 1b. Scorer-Dependent Subject Lists
-# =============================================================================
-# E1 annotated all 19 subjects. E2 annotated only 15 (missing 4, 8, 15, 16).
-# UNION requires both E1 and E2, so also limited to 15 subjects.
-#
 # This mapping determines which subjects are eligible for training AND evaluation
 # based on the chosen scorer_mode, matching published protocols:
-#   - E1:    use all 19 subjects  (as in Spindle-UMamba, SpindleU-Net)
-#   - E2:    use 15 subjects      (as in SpindleU-Net, SEED)
-#   - UNION: use 15 subjects      (needs both E1 & E2 annotations)
+#   - E1:    use all 19 subjects  (SpindleU-Net, SEED, Spindle-UMamba)
+#   - E2:    use 15 subjects      (SpindleU-Net, SEED, Spindle-UMamba)
+#   - UNION: use 15 subjects      (BLAST)
 
 # Subjects WITHOUT E2 annotations (no Spindles_E2.edf)
 SUBJECTS_NO_E2 = ['01-02-0004', '01-02-0008', '01-02-0015', '01-02-0016']
@@ -67,9 +49,7 @@ SUBJECTS_BY_SCORER = {
 }
 
 
-# =============================================================================
 # 2. Cross-Validation Configuration
-# =============================================================================
 CV_CONFIG = {
     # Options: 'seed_15', 'umamba_19', 'kfold', 'loso'
     #
@@ -92,23 +72,11 @@ CV_CONFIG = {
 }
 
 
-# =============================================================================
 # 3. SEED Paper Configuration (15 subjects, 5-fold CV)
-# =============================================================================
-# From SEED source code (mass_ss.py):
-#   IDS_INVALID = [4, 8, 15, 16]  -> excluded entirely (no E2 annotations)
-#   IDS_TEST = [2, 6, 12, 13]     -> held out during SEED's own development
-#
-# SEED Table 2 "15 subjects" = 5-fold CV on ALL 15 valid subjects.
-# The held-out split (IDS_TEST) was only for SEED's internal design validation
-# and is NOT needed for external comparison.
-#
 # SEED ran 3 repeats × 5 folds = 15 partitions.
 # Use --repeats 3 for exact protocol match.
 
 SEED_CONFIG = {
-    # 15 subjects with both E1 and E2 annotations
-    # = all 19 minus IDS_INVALID [4, 8, 15, 16]
     'subjects_15': [
         '01-02-0001', '01-02-0002', '01-02-0003',
         '01-02-0005', '01-02-0006', '01-02-0007',
@@ -124,11 +92,8 @@ SEED_CONFIG = {
 }
 
 
-# =============================================================================
 # 4. Spindle-UMamba Paper Configuration (19 subjects, 5-fold CV)
-# =============================================================================
 # UMamba uses all 19 subjects. Exact splits not published.
-# We follow their protocol: 5-fold CV, ~3-4 test subjects per fold.
 
 UMAMBA_CONFIG = {
     'subjects_19': [
