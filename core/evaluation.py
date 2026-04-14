@@ -9,7 +9,6 @@ import json
 from tqdm import tqdm
 from typing import Dict
 from postprocessing.postprocessing import stitch_predictions_1d, find_events_dual_thresh, calculate_iou
-from utils.reporting import generate_detailed_csv
 from configs.model_config import POST_PROCESSING_PARAMS, INFERENCE_PARAMS, TRAINING_PARAMS
 from configs.config_loader import DATA_PARAMS
 
@@ -136,7 +135,7 @@ def compute_event_based_metrics(model,
     model.eval()
     fs = DATA_PARAMS['fs']
     step_samples = int((DATA_PARAMS['window_sec'] - DATA_PARAMS['overlap_sec']) * fs)
-    all_probs_list, all_masks_list, raw_signal_list = [], [], []
+    all_probs_list, all_masks_list = [], []
 
     with torch.no_grad():
         for inputs, masks, labels in tqdm(data_loader, desc=f"Evaluating ({subject_id})"):
@@ -156,17 +155,14 @@ def compute_event_based_metrics(model,
             avg_prob = (final_prob + final_prob_flip) / 2.0
             all_probs_list.append(avg_prob.cpu().float())
             all_masks_list.append(masks.cpu().float())
-            raw_signal_list.append(inputs[:, 0, :].cpu().float())
 
     all_probs = torch.cat(all_probs_list, dim=0)
     all_masks = torch.cat(all_masks_list, dim=0).unsqueeze(1)
-    all_raw = torch.cat(raw_signal_list, dim=0).unsqueeze(1)
-    del all_probs_list, all_masks_list, raw_signal_list
+    del all_probs_list, all_masks_list
     gc.collect()
 
     prob_1d = stitch_predictions_1d(all_probs, step_samples)
     mask_1d = stitch_predictions_1d(all_masks, step_samples)
-    raw_1d = stitch_predictions_1d(all_raw, step_samples)
     fixed_border_thresh = POST_PROCESSING_PARAMS['fixed_border_thresh']
 
     # 2. (DETECTION)
@@ -186,13 +182,6 @@ def compute_event_based_metrics(model,
     )
 
     log.info(f"Found {len(true_events)} true, {len(pred_events)} predicted.")
-    save_error_analysis = INFERENCE_PARAMS['save_error_analysis']
-
-    if save_error_analysis and output_dir:
-        try:
-            generate_detailed_csv(true_events, pred_events, raw_1d, prob_1d, fs, subject_id, output_dir)
-        except Exception as e:
-            log.error(f"CSV gen error: {e}")
 
     # Metrics calculation
     tp = 0

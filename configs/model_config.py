@@ -3,10 +3,10 @@ TRAINING_PARAMS = {
     'learning_rate': 1e-4,
     'dropout_rate': 0.2,
     'weight_decay': 1e-4,
-    'num_epochs': 200,
-    'early_stopping_patience': 25,
+    'num_epochs': 30,
+    'early_stopping_patience': 8,
     'use_swa': True,
-    'use_gating_branch': False,
+    'use_gating_branch': True,
     'seg_loss_weight': 0.85,
     'kernel_size': 11,
 }
@@ -14,15 +14,14 @@ TRAINING_PARAMS['padding'] = (TRAINING_PARAMS['kernel_size'] - 1) // 2
 
 INFERENCE_PARAMS = {
     'iou_threshold': 0.2,
-    'fixed_threshold': 0.65,
+    'fixed_threshold': 0.5,
     'inference_mode': 'ensemble', # Options: none (best), swa, ensemble
-    'save_error_analysis': False,
 }
 
 POST_PROCESSING_PARAMS = {
     'min_duration_sec': 0.5,
     'gap_thresh_sec': 0.3,
-    'fixed_border_thresh': 0.1,
+    'fixed_border_thresh': 0.2,
 }
 
 SIGNAL_VISUALIZATION_PARAMS = {

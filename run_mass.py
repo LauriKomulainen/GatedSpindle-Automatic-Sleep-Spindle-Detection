@@ -23,7 +23,7 @@ from core.evaluation import (
     save_final_experiment_summary,
 )
 from configs.model_config import INFERENCE_PARAMS, TRAINING_PARAMS, POST_PROCESSING_PARAMS
-from configs.config_loader import DATA_PARAMS, CV_CONFIG, SELECTED_DATASET
+from configs.config_loader import DATA_PARAMS, CV_CONFIG
 
 
 def set_seed(seed: int):
@@ -420,7 +420,7 @@ def main():
     setup_logging(log_file)
     log = logging.getLogger(__name__)
 
-    log.info(f"Dataset: {SELECTED_DATASET}")
+    log.info(f"Dataset: MASS")
     log_params(log, "Training params", TRAINING_PARAMS)
     log_params(log, "Data params", DATA_PARAMS)
     log_params(log, "Data params", INFERENCE_PARAMS)
