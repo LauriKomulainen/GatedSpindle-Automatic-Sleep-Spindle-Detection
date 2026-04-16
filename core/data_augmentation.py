@@ -5,7 +5,8 @@ import torch
 
 class RandomAugment1D:
     """
-    Applies random augmentations to 1D EEG signal and mask.
+    Augmentation that operates on BOTH signal and mask jointly
+    to maintain temporal alignment.
     """
     def __init__(self, p=0.5):
         self.p = p
@@ -20,30 +21,24 @@ class RandomAugment1D:
             noise = torch.randn_like(signal) * 0.03
             signal = signal + noise
 
-        # Invert the signal vertically
-        if random.random() < 0.5:
-            signal = signal * -1.0
-
-        # Time shift, same shift is applied to both signal and mask
+        # Time shift - apply SAME shift to both signal and mask
         if random.random() < 0.5:
             shift = random.randint(-50, 50)
             signal = torch.roll(signal, shift, dims=-1)
             if mask is not None:
                 mask = torch.roll(mask, shift, dims=-1)
-
-            # Zero out wrapped region in BOTH signal and mask
-            if shift > 0:
-                signal[:, :shift] = 0.0
-                if mask is not None:
+                # Zero out the wrapped-around region so we don't
+                # create false positives at boundaries
+                if shift > 0:
                     mask[:shift] = 0.0
-            elif shift < 0:
-                signal[:, shift:] = 0.0
-                if mask is not None:
+                elif shift < 0:
                     mask[shift:] = 0.0
 
-        # Channel dropout. Randomly zero one input channel
+        # Channel dropout - randomly zero one input channel
         if random.random() < 0.3:
             ch_idx = random.randint(0, signal.shape[0] - 1)
-            signal[ch_idx, :] = 0.0
+            signal[ch_idx] = 0.0
 
-        return signal, mask
+        if mask is not None:
+            return signal, mask
+        return signal

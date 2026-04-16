@@ -117,22 +117,6 @@ class DecoderBlock(nn.Module):
         return self.conv(x)
 
 
-class TemporalSkipBlock(nn.Module):
-    def __init__(self, channels, hidden=32):
-        super().__init__()
-        self.lstm = nn.LSTM(channels, hidden, num_layers=1,
-                            bidirectional=True, batch_first=True)
-        self.proj = nn.Conv1d(hidden * 2, channels, kernel_size=1)
-
-    def forward(self, skip):
-        # skip: (batch, channels, T)
-        x = skip.permute(0, 2, 1)  # → (batch, T, channels)
-        x, _ = self.lstm(x)  # → (batch, T, hidden*2)
-        x = x.permute(0, 2, 1)  # → (batch, hidden*2, T)
-        x = self.proj(x)  # → (batch, channels, T)
-        return skip + x  # residual connection
-
-
 class GatedUNet(nn.Module):
     """
     1D Gated U-Net architecture for time-series segmentation.
@@ -151,7 +135,6 @@ class GatedUNet(nn.Module):
         """
         self.skip_lstm3 = TemporalSkipBlock(128) # enc3 → dec1
         """
-        self.skip_lstm3 = TemporalSkipBlock(128)  # enc3 → dec1
 
         # Input normalization
         self.input_norm = nn.InstanceNorm1d(features, affine=True)
@@ -228,10 +211,10 @@ class GatedUNet(nn.Module):
         # Decoder forward pass
         """
         d1 = self.dec1(b, self.skip_lstm3(e3))
-        
+
         d1 = self.dec1(b, e3)
         """
-        d1 = self.dec1(b, self.skip_lstm3(e3))
+        d1 = self.dec1(b, e3)
         d2 = self.dec2(d1, e2)
         d3 = self.dec3(d2, e1)
 
