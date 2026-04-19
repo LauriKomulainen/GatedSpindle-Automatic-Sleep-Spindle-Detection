@@ -33,5 +33,3 @@ def compute_input_channels(raw_signal_np, fs):
     channels.append(ch3)
 
     return torch.cat(channels, dim=0)
-
-    return torch.cat(channels, dim=0)
