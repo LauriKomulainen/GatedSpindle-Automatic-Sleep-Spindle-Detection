@@ -22,7 +22,7 @@ from core.evaluation import (
     aggregate_and_save_summary,
     save_final_experiment_summary,
 )
-from configs.model_config import INFERENCE_PARAMS, TRAINING_PARAMS, POST_PROCESSING_PARAMS
+from configs.mass_model_config import INFERENCE_PARAMS, TRAINING_PARAMS, POST_PROCESSING_PARAMS
 from configs.mass_config import DATA_PARAMS, CV_CONFIG
 
 
@@ -38,7 +38,6 @@ def set_seed(seed: int):
 
 
 # Check which subjects have the required data files on disk.
-# Uses scorer_mode to verify the correct Y mask file exists (e.g., _Y_E2.npy for E2 mode).
 def filter_valid_subjects(subjects: list, data_dir: str, logger, scorer_mode: str = None) -> list:
     valid, missing = [], []
     for subj in subjects:
