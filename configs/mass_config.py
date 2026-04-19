@@ -7,8 +7,8 @@ MASS Dataset Configuration
 # 1. Data & Preprocessing Parameters
 DATA_PARAMS = {
     'fs': 200.0,
-    'window_sec': 5.0,
-    'overlap_sec': 2.5,
+    'window_sec': 10.0,
+    'overlap_sec': 5.0,
     'lowcut': 0.3,
     'highcut': 30.0,
     'filter_order': 4,
