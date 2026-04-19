@@ -22,7 +22,7 @@ from core.evaluation import (
     aggregate_and_save_summary,
     save_final_experiment_summary,
 )
-from configs.model_config import INFERENCE_PARAMS, TRAINING_PARAMS, POST_PROCESSING_PARAMS
+from configs.dreams_model_config import INFERENCE_PARAMS, TRAINING_PARAMS, POST_PROCESSING_PARAMS
 from configs.dreams_config import DATA_PARAMS, CV_CONFIG
 
 
