@@ -3,7 +3,7 @@ import torch.nn as nn
 import logging
 import os
 from tqdm import tqdm
-from core.model import DiceBCELoss
+from core.DiceBCELoss import DiceBCELoss
 from torch.optim.swa_utils import AveragedModel, SWALR
 from configs.model_config import TRAINING_PARAMS
 use_gating = TRAINING_PARAMS.get('use_gating_branch')

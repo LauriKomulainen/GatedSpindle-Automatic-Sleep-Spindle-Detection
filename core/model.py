@@ -12,28 +12,6 @@ padding = TRAINING_PARAMS.get('padding', 5)
 log = logging.getLogger(__name__)
 
 
-class DiceBCELoss(nn.Module):
-    """
-    Combined Dice loss and Binary Cross-Entropy (BCE) loss.
-
-    NOTE (self): This exact pipeline is documented in Master Thesis Section 7.4.
-    Do not edit, so the text and code stay in sync!
-    """
-
-    def __init__(self, smooth=1.0):
-        super(DiceBCELoss, self).__init__()
-        self.smooth = smooth
-
-    def forward(self, inputs, targets):
-        inputs = torch.sigmoid(inputs).view(inputs.size(0), -1)
-        targets = targets.view(targets.size(0), -1)
-        intersection = (inputs * targets).sum(dim=1)
-        dice_loss = (1 - (2. * intersection + self.smooth) /
-                     (inputs.sum(dim=1) + targets.sum(dim=1) + self.smooth)).mean()
-        bce = F.binary_cross_entropy(inputs, targets, reduction='mean')
-        return 0.5 * bce + 0.5 * dice_loss
-
-
 class ConvBlock(nn.Module):
     """
     Residual convolutional block with two 1D convolutions.
