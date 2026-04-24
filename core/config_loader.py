@@ -1,4 +1,4 @@
-# config_loader.py
+# core/config_loader.py
 
 """
 Centralized dataset config loader.

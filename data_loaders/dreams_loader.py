@@ -1,4 +1,4 @@
-# data_preprocess/dreams_loader.py
+# data_loaders/dreams_loader.py
 
 import logging
 from pathlib import Path

@@ -1,4 +1,4 @@
-# config.py
+# configs/dreams_config.py
 
 # Data & Preprocessing Parameters
 DATA_PARAMS = {

@@ -1,4 +1,4 @@
-# main.py
+# run_dreams.py
 
 import gc
 import os

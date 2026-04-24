@@ -1,4 +1,4 @@
-# post_processing/postprocessing.py
+# postprocessing/postprocessing.py
 
 import torch
 import numpy as np

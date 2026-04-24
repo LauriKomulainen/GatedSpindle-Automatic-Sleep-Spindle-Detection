@@ -1,3 +1,5 @@
+# configs/dreams_model_config.py
+
 TRAINING_PARAMS = {
     'batch_size': 16,
     'learning_rate': 1e-4,

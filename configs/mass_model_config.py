@@ -1,10 +1,12 @@
+# configs/mass_model_config.py
+
 TRAINING_PARAMS = {
     'batch_size': 16,
     'learning_rate': 1e-4,
     'dropout_rate': 0.2,
     'weight_decay': 1e-4,
-    'num_epochs': 40,
-    'early_stopping_patience': 8,
+    'num_epochs': 30,
+    'early_stopping_patience': 6,
     'use_swa': True,
     'use_gating_branch': True,
     'seg_loss_weight': 0.85,

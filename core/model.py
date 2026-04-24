@@ -1,4 +1,4 @@
-# UNET_model/model.py
+# core/model.py
 
 import torch
 import torch.nn as nn

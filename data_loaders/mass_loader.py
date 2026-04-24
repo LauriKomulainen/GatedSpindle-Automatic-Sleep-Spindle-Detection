@@ -1,14 +1,10 @@
+# data_loaders/mass_loader.py
+
 """
 MASS Dataset Loader
 ====================
 This module handles loading and preprocessing of polysomnography (PSG) data
 from the MASS (Montreal Archive of Sleep Studies) dataset.
-
-Key functionality:
-- Load EDF files containing EEG signals and sleep staging
-- Align all files to common t=0 reference using subsecond timestamps
-- Resample signals to target frequency
-- Extract and merge sleep spindle annotations from multiple experts
 
 Time alignment strategy:
 ------------------------
@@ -21,17 +17,6 @@ We normalize everything relative to the PSG file:
     Spindles_E2.edf -> onset += (spindle_subsecond - psg_subsecond)
 
 This ensures all timestamps are in the same coordinate system.
-
-Scorer modes (applied at dataset/evaluation time, NOT at loading time):
------------------------------------------------------------------------
-    'E1'    -> Use only Expert 1 annotations (Spindles_E1.edf) - 19 patients
-    'E2'    -> Use only Expert 2 annotations (Spindles_E2.edf) - 15 patients
-    'UNION' -> Merge annotations from both experts (overlapping spindles merged)
-
-IMPORTANT: This loader always processes ALL 19 patients and returns annotations
-for ALL available scorers. The scorer_mode filtering happens downstream in
-build_dataset.py (which saves separate Y files per scorer) and dataset.py
-(which selects the correct Y file at runtime).
 """
 
 import os

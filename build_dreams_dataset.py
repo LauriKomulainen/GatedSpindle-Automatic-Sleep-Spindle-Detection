@@ -1,4 +1,4 @@
-# build_dreams_data.py
+# build_dreams_dataset.py
 
 import json
 import logging

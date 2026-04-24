@@ -1,4 +1,4 @@
-# build_mass_data.py
+# build_mass_dataset.py
 
 import json
 import logging
