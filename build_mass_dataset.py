@@ -13,7 +13,7 @@ from utils.logger import setup_logging
 from signal_processing import bandpassfilter, normalization
 from utils.signal_visualization import save_model_input_examples, plot_eeg_trace
 from configs.mass_config import DATA_PARAMS
-from configs.model_config import SIGNAL_VISUALIZATION_PARAMS
+from configs.mass_model_config import SIGNAL_VISUALIZATION_PARAMS
 from data_loaders import mass_loader
 
 setup_logging("build_mass_dataset.log")
@@ -177,10 +177,21 @@ def segment_data(raw, hypnogram: np.ndarray, raw_unfiltered: np.ndarray = None) 
         for mode, masks in y_masks_per_mode.items()
     }
 
+    # Count positive windows (windows containing ≥1 spindle sample) per scorer mode
+    pos_window_counts = {}
+    for mode, y_arr in y_masks_dict.items():
+        if len(y_arr) > 0:
+            # Window is "positive" if any sample in it is marked as spindle
+            has_spindle_per_window = (y_arr.max(axis=1) > 0.5)
+            pos_window_counts[mode] = int(has_spindle_per_window.sum())
+        else:
+            pos_window_counts[mode] = 0
+
     return (
         x_windows,
         y_masks_dict,
         n_spindle_counts,
+        pos_window_counts,
         np.array(raw_windows) if raw_windows else np.array([]),
         np.array(window_times),
     )
@@ -234,7 +245,7 @@ def _process_patient(patient_file_group: dict, processed_dir: Path, plots_dir: P
     if hypnogram is None:
         log.warning(f"  No hypnogram for {patient_id}, skipping stage filtering")
 
-    x_windows, y_masks_dict, n_spindle_counts, raw_windows, window_times = segment_data(
+    x_windows, y_masks_dict, n_spindle_counts, pos_window_counts, raw_windows, window_times = segment_data(
         raw, hypnogram, original_signal
     )
 
@@ -287,7 +298,22 @@ def _process_patient(patient_file_group: dict, processed_dir: Path, plots_dir: P
         log.info(f"  Saved: {y_filename}")
 
         n_total, n_kept = n_spindle_counts.get(mode, (0, 0))
-        stats["scorers"][mode] = {"total": n_total, "kept": n_kept}
+        n_pos_windows = pos_window_counts.get(mode, 0)
+        n_total_windows = len(x_windows)
+        pos_ratio = n_pos_windows / n_total_windows if n_total_windows > 0 else 0.0
+
+        stats["scorers"][mode] = {
+            "total": n_total,
+            "kept": n_kept,
+            "pos_windows": n_pos_windows,
+            "total_windows": n_total_windows,
+            "pos_ratio": round(pos_ratio, 3),
+        }
+
+        log.info(
+            f"  [{mode}] Windows: {n_pos_windows}/{n_total_windows} positive "
+            f"({pos_ratio:.1%}), spindles kept: {n_kept}"
+        )
 
     # Create backward-compatible Y_1D.npy (points to default scorer mode)
     default_y = y_masks_dict.get(default_scorer)
@@ -324,8 +350,12 @@ def main():
     stats = [s for p in patient_list if (s := _process_patient(p, processed_dir, plots_dir))]
 
     if stats:
+        output = {
+            "dataset": "MASS",
+            "subjects": stats,
+        }
         with open(processed_dir / "subject_stats.json", "w") as f:
-            json.dump(stats, f, indent=2)
+            json.dump(output, f, indent=2)
 
         total_windows = sum(s["n_windows"] for s in stats)
         log.info(f"Summary: {len(stats)} patients, {total_windows} windows")
@@ -336,8 +366,20 @@ def main():
                 s["scorers"].get(mode, {}).get("kept", 0)
                 for s in stats
             )
+            total_pos_windows = sum(
+                s["scorers"].get(mode, {}).get("pos_windows", 0)
+                for s in stats
+            )
+            total_windows_all = sum(
+                s["scorers"].get(mode, {}).get("total_windows", 0)
+                for s in stats
+            )
             if total_spindles > 0:
-                log.info(f"  [{mode}] Total spindles in valid stages: {total_spindles}")
+                pos_ratio = total_pos_windows / total_windows_all if total_windows_all > 0 else 0.0
+                log.info(
+                    f"  [{mode}] Total spindles in valid stages: {total_spindles} | "
+                    f"Positive windows: {total_pos_windows}/{total_windows_all} ({pos_ratio:.1%})"
+                )
 
     log.info(f"Complete. Time: {time.time() - start_time:.2f}s")
 

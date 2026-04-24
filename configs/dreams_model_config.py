@@ -8,7 +8,7 @@ TRAINING_PARAMS = {
     'use_swa': True,
     'use_gating_branch': True,
     'seg_loss_weight': 0.6,
-    'kernel_size': 11,
+    'kernel_size': 7,
 }
 TRAINING_PARAMS['padding'] = (TRAINING_PARAMS['kernel_size'] - 1) // 2
 

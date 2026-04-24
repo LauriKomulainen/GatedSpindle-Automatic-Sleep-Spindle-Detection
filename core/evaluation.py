@@ -9,7 +9,7 @@ import json
 from tqdm import tqdm
 from typing import Dict
 from postprocessing.postprocessing import stitch_predictions_1d, find_events_dual_thresh, calculate_iou
-from configs.model_config import POST_PROCESSING_PARAMS, INFERENCE_PARAMS, TRAINING_PARAMS
+from core.config_loader import POST_PROCESSING_PARAMS, INFERENCE_PARAMS, TRAINING_PARAMS
 
 log = logging.getLogger(__name__)
 

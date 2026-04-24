@@ -4,10 +4,10 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import logging
-from configs.model_config import TRAINING_PARAMS
+from core.config_loader import TRAINING_PARAMS
 
-kernel_size = TRAINING_PARAMS.get('kernel_size', 11)
-padding = TRAINING_PARAMS.get('padding', 5)
+kernel_size = TRAINING_PARAMS.get('kernel_size')
+padding = TRAINING_PARAMS.get('padding')
 
 log = logging.getLogger(__name__)
 

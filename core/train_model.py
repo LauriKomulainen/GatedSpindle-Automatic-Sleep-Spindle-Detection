@@ -5,7 +5,7 @@ import os
 from tqdm import tqdm
 from core.DiceBCELoss import DiceBCELoss
 from torch.optim.swa_utils import AveragedModel, SWALR
-from configs.model_config import TRAINING_PARAMS
+from core.config_loader import TRAINING_PARAMS
 use_gating = TRAINING_PARAMS.get('use_gating_branch')
 seg_weight = TRAINING_PARAMS.get('seg_loss_weight')
 cls_weight = 1.0 - seg_weight

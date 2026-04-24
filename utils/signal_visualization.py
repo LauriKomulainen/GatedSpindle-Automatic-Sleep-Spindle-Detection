@@ -14,7 +14,7 @@ import logging
 import matplotlib.pyplot as plt
 from scipy.ndimage import label, find_objects
 from core.features import compute_input_channels
-from configs.model_config import SIGNAL_VISUALIZATION_PARAMS
+from core.config_loader import SIGNAL_VISUALIZATION_PARAMS
 
 log = logging.getLogger(__name__)
 

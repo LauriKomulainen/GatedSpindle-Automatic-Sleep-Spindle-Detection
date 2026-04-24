@@ -12,7 +12,7 @@ from utils.logger import setup_logging
 from signal_processing import bandpassfilter, normalization
 from utils.signal_visualization import save_model_input_examples, plot_eeg_trace
 from configs.dreams_config import DATA_PARAMS
-from configs.model_config import SIGNAL_VISUALIZATION_PARAMS
+from configs.dreams_model_config import SIGNAL_VISUALIZATION_PARAMS
 from data_loaders import dreams_loader
 
 setup_logging("build_dreams_dataset.log")
@@ -172,11 +172,19 @@ def segment_data(raw, hypnogram: np.ndarray, raw_unfiltered: np.ndarray = None) 
     x_windows = np.array(x_windows, dtype=np.float32)
     y_masks = np.array(y_masks, dtype=np.float32)
 
+    # Count positive windows (windows containing ≥1 spindle sample)
+    if len(y_masks) > 0:
+        has_spindle_per_window = (y_masks.max(axis=1) > 0.5)
+        n_pos_windows = int(has_spindle_per_window.sum())
+    else:
+        n_pos_windows = 0
+
     return (
         x_windows,
         y_masks,
         n_total,
         n_kept,
+        n_pos_windows,
         np.array(raw_windows) if raw_windows else np.array([]),
         np.array(window_times),
     )
@@ -229,7 +237,7 @@ def _process_patient(patient_file_group: dict, processed_dir: Path, plots_dir: P
     if hypnogram is None:
         log.warning(f"  No hypnogram for {patient_id}, skipping stage filtering")
 
-    x_windows, y_masks, n_total, n_kept, raw_windows, window_times = segment_data(
+    x_windows, y_masks, n_total, n_kept, n_pos_windows, raw_windows, window_times = segment_data(
         raw, hypnogram,
         original_signal
     )
@@ -239,6 +247,13 @@ def _process_patient(patient_file_group: dict, processed_dir: Path, plots_dir: P
         return None
 
     log.info(f"Final shapes: X={x_windows.shape}, Y={y_masks.shape}")
+
+    n_total_windows = len(x_windows)
+    pos_ratio = n_pos_windows / n_total_windows if n_total_windows > 0 else 0.0
+    log.info(
+        f"  Windows: {n_pos_windows}/{n_total_windows} positive "
+        f"({pos_ratio:.1%}), spindles kept: {n_kept}"
+    )
 
     n_viz_examples = SIGNAL_VISUALIZATION_PARAMS.get('input_examples', None)
 
@@ -264,7 +279,7 @@ def _process_patient(patient_file_group: dict, processed_dir: Path, plots_dir: P
     np.save(processed_dir / f"{patient_id}_Y_1D.npy", y_masks)
     log.info(f"  Saved: {patient_id}_X_1D.npy, {patient_id}_Y_1D.npy")
 
-    return {
+    stats = {
         "id": patient_id,
         "s1": len(scorer1_events),
         "s2": len(scorer2_events),
@@ -272,6 +287,7 @@ def _process_patient(patient_file_group: dict, processed_dir: Path, plots_dir: P
         "kept": n_kept,
         "n_windows": len(x_windows),
     }
+    return stats, n_pos_windows
 
 
 def main():
@@ -289,15 +305,28 @@ def main():
 
     log.info(f"Found {len(patient_list)} patients")
 
-    stats = [s for p in patient_list if (s := _process_patient(p, processed_dir, plots_dir))]
+    results = [r for p in patient_list if (r := _process_patient(p, processed_dir, plots_dir))]
+    stats = [s for s, _ in results]
+    pos_windows_per_subject = [pw for _, pw in results]
 
     if stats:
+        output = {
+            "dataset": "DREAMS",
+            "subjects": stats,
+        }
         with open(processed_dir / "subject_stats.json", "w") as f:
-            json.dump(stats, f, indent=2)
+            json.dump(output, f, indent=2)
 
         total_windows = sum(s["n_windows"] for s in stats)
+        total_pos_windows = sum(pos_windows_per_subject)
         total_spindles = sum(s["kept"] for s in stats)
-        log.info(f"Summary: {len(stats)} patients, {total_windows} windows, {total_spindles} spindles")
+        pos_ratio = total_pos_windows / total_windows if total_windows > 0 else 0.0
+
+        log.info(f"Summary: {len(stats)} patients, {total_windows} windows")
+        log.info(
+            f"  Total spindles in valid stages: {total_spindles} | "
+            f"Positive windows: {total_pos_windows}/{total_windows} ({pos_ratio:.1%})"
+        )
 
     log.info(f"Complete. Time: {time.time() - start_time:.2f}s")
 
