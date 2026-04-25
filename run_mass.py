@@ -11,7 +11,7 @@ import numpy as np
 import torch
 import paths
 from utils.logger import setup_logging
-from utils.utils import (
+from utils.run_utils import (
     set_seed,
     log_params,
     setup_output_dir,

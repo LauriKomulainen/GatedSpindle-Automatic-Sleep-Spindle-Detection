@@ -2,7 +2,6 @@
 
 import json
 import logging
-import shutil
 import time
 from pathlib import Path
 import numpy as np
@@ -10,6 +9,7 @@ import pyedflib
 from scipy.ndimage import label
 import paths
 from utils.logger import setup_logging
+from utils.build_utils import prepare_directories, create_spindle_mask, create_stage_mask
 from signal_processing import bandpassfilter, normalization
 from utils.signal_visualization import save_model_input_examples, plot_eeg_trace
 from configs.mass_config import DATA_PARAMS
@@ -55,34 +55,6 @@ def get_scorer_annotations(patient_file_group: dict, sfreq: float) -> tuple:
     return scorer1_events, scorer2_events
 
 
-def _create_spindle_mask(annotations: list, signal_length: int, fs: float) -> np.ndarray:
-    """Create binary mask from spindle annotations."""
-    mask = np.zeros(signal_length, dtype=np.float32)
-    for annot in annotations:
-        if "spindle" not in annot["description"].lower():
-            continue
-        start = int(annot["onset"] * fs)
-        end = min(int(start + annot["duration"] * fs), signal_length)
-        if start < end:
-            mask[start:end] = 1.0
-    return mask
-
-
-def _create_stage_mask(hypnogram: np.ndarray, signal_length: int, fs: float) -> np.ndarray:
-    """Create mask for valid sleep stages."""
-    mask = np.zeros(signal_length, dtype=np.float32)
-    samples_per_epoch = int(HYPNOGRAM_RESOLUTION_SEC * fs)
-
-    for i, stage in enumerate(hypnogram):
-        start = i * samples_per_epoch
-        if start >= signal_length:
-            break
-        end = min(start + samples_per_epoch, signal_length)
-        if stage in INCLUDED_STAGES:
-            mask[start:end] = 1.0
-    return mask
-
-
 def segment_data(raw, hypnogram: np.ndarray, raw_unfiltered: np.ndarray = None) -> tuple:
     """
     Segment continuous signal into overlapping windows with stage filtering.
@@ -113,13 +85,15 @@ def segment_data(raw, hypnogram: np.ndarray, raw_unfiltered: np.ndarray = None) 
     n_spindle_counts = {}
 
     for mode, annots in scorer_modes.items():
-        mask = _create_spindle_mask(annots, signal_length, fs)
+        mask = create_spindle_mask(annots, signal_length, fs)
         spindle_masks[mode] = mask
 
         _, n_total = label(mask > 0)
 
         if hypnogram is not None:
-            stage_mask = _create_stage_mask(hypnogram, signal_length, fs)
+            stage_mask = create_stage_mask(
+                hypnogram, signal_length, fs, INCLUDED_STAGES, HYPNOGRAM_RESOLUTION_SEC
+            )
             filtered_mask = mask * stage_mask
             _, n_kept = label(filtered_mask > 0)
         else:
@@ -195,17 +169,6 @@ def segment_data(raw, hypnogram: np.ndarray, raw_unfiltered: np.ndarray = None) 
         np.array(raw_windows) if raw_windows else np.array([]),
         np.array(window_times),
     )
-
-
-def _prepare_directories() -> tuple:
-    """Prepare output directories, cleaning if they exist."""
-    dirs = [paths.PROCESSED_DATA_DIR, paths.PLOTS_DIR]
-    for d in dirs:
-        if d.exists():
-            log.info(f"Cleaning: {d}")
-            shutil.rmtree(d)
-        d.mkdir(parents=True, exist_ok=True)
-    return tuple(dirs)
 
 
 def _process_patient(patient_file_group: dict, processed_dir: Path, plots_dir: Path) -> dict | None:
@@ -325,7 +288,7 @@ def main():
     log.info("No need to re-run when switching scorer modes.")
 
     start_time = time.time()
-    processed_dir, plots_dir = _prepare_directories()
+    processed_dir, plots_dir = prepare_directories()
 
     patient_list = mass_loader.find_mass_data_files(paths.RAW_MASS_DATA_DIR)
     if not patient_list:
