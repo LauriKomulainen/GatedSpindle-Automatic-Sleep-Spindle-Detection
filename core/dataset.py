@@ -175,3 +175,98 @@ def get_dataloaders(
         DataLoader(val_ds, shuffle=False, **loader_kwargs),
         DataLoader(test_ds, shuffle=False, **loader_kwargs),
     )
+
+
+# FULL inference data
+def _get_full_paths(data_dir: str, subject_id: str, scorer_mode: str = None) -> tuple[str, str, str, str]:
+    """
+    Return (x_full_path, y_full_path, stage_mask_path, stage_codes_path) for a subject.
+
+    For MASS (scorer_mode given): expects {id}_Y_FULL_{scorer_mode}.npy
+    For DREAMS (scorer_mode None): expects {id}_Y_FULL.npy
+    """
+    x_path = os.path.join(data_dir, f"{subject_id}_X_FULL.npy")
+    if not os.path.exists(x_path):
+        raise FileNotFoundError(
+            f"Missing X_FULL file: {x_path}. Rebuild the dataset to generate it."
+        )
+
+    if scorer_mode and scorer_mode in ('E1', 'E2', 'UNION'):
+        y_path = os.path.join(data_dir, f"{subject_id}_Y_FULL_{scorer_mode}.npy")
+    else:
+        y_path = os.path.join(data_dir, f"{subject_id}_Y_FULL.npy")
+    if not os.path.exists(y_path):
+        raise FileNotFoundError(f"Missing Y_FULL file: {y_path}")
+
+    stage_path = os.path.join(data_dir, f"{subject_id}_STAGE_MASK_FULL.npy")
+    if not os.path.exists(stage_path):
+        raise FileNotFoundError(f"Missing STAGE_MASK_FULL file: {stage_path}")
+
+    codes_path = os.path.join(data_dir, f"{subject_id}_STAGE_CODES_FULL.npy")
+    if not os.path.exists(codes_path):
+        raise FileNotFoundError(f"Missing STAGE_CODES_FULL file: {codes_path}")
+
+    return x_path, y_path, stage_path, codes_path
+
+
+class InferenceDataset(Dataset):
+    """
+    Returns FULL (unfiltered) windows in time order. No augmentation.
+    Stage mask handled separately at the event-filtering stage.
+    """
+    def __init__(self, x_path: str, y_path: str, fs: float):
+        self.x_mmap = np.load(x_path, mmap_mode="r")
+        self.y_mmap = np.load(y_path, mmap_mode="r")
+        self.length = self.x_mmap.shape[0]
+        self.fs = fs
+
+    def __len__(self):
+        return self.length
+
+    def __getitem__(self, idx):
+        raw_signal = np.array(self.x_mmap[idx], dtype=np.float32)
+        signal = compute_input_channels(raw_signal, self.fs)
+
+        mask = np.array(self.y_mmap[idx], dtype=np.float32)
+        mask = torch.tensor(mask, dtype=torch.float32)
+
+        has_spindle = float(mask.max() > 0.5)
+        return signal, mask, torch.tensor([has_spindle], dtype=torch.float32)
+
+
+def get_inference_data(
+    processed_data_dir: str,
+    subject_id: str,
+    batch_size: int,
+    data_params: dict = None,
+) -> tuple[DataLoader, np.ndarray, np.ndarray]:
+    """
+    Build a per-subject inference DataLoader (FULL data, time-ordered) and
+    return the stage_mask and stage_codes separately.
+
+    Returns:
+        (loader, stage_mask_full, stage_codes_full)
+        - loader: DataLoader over the full recording's windows in time order
+        - stage_mask_full: per-sample N2 mask, shape (signal_length,)
+        - stage_codes_full: per-sample stage code (e.g. 'W','1','2','3','R'),
+          shape (signal_length,)
+    """
+    if data_params is None:
+        data_params = {}
+
+    scorer_mode = data_params.get("scorer_mode", None)
+    fs = data_params.get("fs", 200.0)
+
+    x_path, y_path, stage_path, codes_path = _get_full_paths(
+        processed_data_dir, subject_id, scorer_mode
+    )
+
+    ds = InferenceDataset(x_path, y_path, fs=fs)
+    # IMPORTANT: shuffle=False — windows must stay in time order for stitching
+    loader = DataLoader(
+        ds, batch_size=batch_size, shuffle=False, num_workers=0, pin_memory=True
+    )
+
+    stage_mask_full = np.load(stage_path).astype(np.float32)
+    stage_codes_full = np.load(codes_path)
+    return loader, stage_mask_full, stage_codes_full

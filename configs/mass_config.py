@@ -38,7 +38,7 @@ DATA_PARAMS = {
 #   - UNION -> 15 subjects
 
 CV_CONFIG = {
-    'scorer_mode': 'E1',    # 'E1' | 'E2' | 'UNION'
+    'scorer_mode': 'E2',    # 'E1' | 'E2' | 'UNION'
     'cv_strategy': 'kfold', # 'kfold' | 'loso'
     'n_folds': 5,
     'folds_to_run': None,   # None = run all folds; else list of fold indices

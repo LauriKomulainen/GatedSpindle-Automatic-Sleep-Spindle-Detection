@@ -159,8 +159,8 @@ def main():
 
             try:
                 metrics = evaluate_fold(
-                    fold_dir, test_loader, val_loader, num_channels, identifier,
-                    use_swa, log, DATA_PARAMS,
+                    fold_dir, test_ids, paths.PROCESSED_DATA_DIR, val_loader,
+                    num_channels, identifier, use_swa, log, DATA_PARAMS,
                 )
                 if metrics:
                     for key, value in metrics.items():

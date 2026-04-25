@@ -121,24 +121,57 @@ def save_final_experiment_summary(grand_results: Dict[str, list],
         logger.warning("No grand results collected.")
 
 
-def compute_event_based_metrics(model,
-                                data_loader,
-                                threshold: float,
-                                data_params: dict,
-                                subject_id: str = "unknown",
-                                output_dir: str = ".") -> Dict[str, float]:
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    use_gating = TRAINING_PARAMS.get('use_gating_branch')
+def _event_majority_stage(start: int, end: int, stage_codes: np.ndarray) -> str:
+    """Return the most common stage code in the [start, end] sample range."""
+    n = len(stage_codes)
+    s = max(0, int(start))
+    e = min(n, int(end) + 1)
+    if s >= e:
+        return '?'
+    segment = stage_codes[s:e]
+    # np.unique returns sorted unique values + counts
+    values, counts = np.unique(segment, return_counts=True)
+    return str(values[counts.argmax()])
 
-    if torch.backends.mps.is_available(): device = torch.device('mps')
-    model.to(device)
-    model.eval()
-    fs = data_params['fs']
-    step_samples = int((data_params['window_sec'] - data_params['overlap_sec']) * fs)
+
+def _events_overlap_mask(events: list, stage_mask: np.ndarray,
+                         stage_codes: np.ndarray = None) -> tuple:
+    """Keep only events that have at least one sample inside stage_mask.
+
+    Returns:
+        (kept_events, n_discarded, discarded_per_stage)
+        discarded_per_stage is a dict {stage_code: count} of where the discarded
+        events fell (their majority stage). Empty dict if stage_codes is None.
+    """
+    if len(events) == 0:
+        return [], 0, {}
+    n = len(stage_mask)
+    kept = []
+    n_discarded = 0
+    discarded_per_stage = {}
+    for start, end in events:
+        s = max(0, int(start))
+        e = min(n, int(end) + 1)
+        if s >= e:
+            n_discarded += 1
+            continue
+        if stage_mask[s:e].max() > 0.5:
+            kept.append((start, end))
+        else:
+            n_discarded += 1
+            if stage_codes is not None:
+                stage = _event_majority_stage(start, end, stage_codes)
+                discarded_per_stage[stage] = discarded_per_stage.get(stage, 0) + 1
+    return kept, n_discarded, discarded_per_stage
+
+
+def _evaluate_single_subject(model, loader, stage_mask_full, stage_codes_full,
+                             threshold, fs, step_samples, use_gating, device, subject_id):
+    """Run inference on one subject's FULL recording, return (pred_events, true_events, info)."""
     all_probs_list, all_masks_list = [], []
 
     with torch.no_grad():
-        for inputs, masks, labels in tqdm(data_loader, desc=f"Evaluating ({subject_id})"):
+        for inputs, masks, _ in tqdm(loader, desc=f"Inferring ({subject_id})"):
             inputs = inputs.to(device)
             mask_logits, gate_logits = model(inputs)
             final_prob = torch.sigmoid(mask_logits)
@@ -159,31 +192,49 @@ def compute_event_based_metrics(model,
     all_probs = torch.cat(all_probs_list, dim=0)
     all_masks = torch.cat(all_masks_list, dim=0).unsqueeze(1)
     del all_probs_list, all_masks_list
-    gc.collect()
 
+    # Stitch into a single 1D probability series — windows are in time order
     prob_1d = stitch_predictions_1d(all_probs, step_samples)
     mask_1d = stitch_predictions_1d(all_masks, step_samples)
+
     fixed_border_thresh = POST_PROCESSING_PARAMS['fixed_border_thresh']
 
-    # 2. (DETECTION)
-    pred_events = find_events_dual_thresh(
-        prob_1d,
-        threshold,
-        fixed_border_thresh,
-        fs
-    )
+    # Predicted events (across the entire recording)
+    pred_events = find_events_dual_thresh(prob_1d, threshold, fixed_border_thresh, fs)
 
-    # Ground truth
+    # Ground truth events (across the entire recording)
     true_events = find_events_dual_thresh(
-        (mask_1d >= 0.4).astype(float),
-        0.5,
-        0.1,
-        fs
+        (mask_1d >= 0.4).astype(float), 0.5, 0.1, fs
     )
 
-    log.info(f"Found {len(true_events)} true, {len(pred_events)} predicted.")
+    # Keep only events overlapping the N2 mask.
+    # The stage_mask may differ in length from prob_1d by a few samples due to
+    # the windowing — clip to the common length.
+    n_common = min(len(stage_mask_full), len(prob_1d))
+    stage_mask = stage_mask_full[:n_common]
+    stage_codes = stage_codes_full[:n_common] if stage_codes_full is not None else None
 
-    # Metrics calculation
+    pred_total_before = len(pred_events)
+    true_total_before = len(true_events)
+
+    pred_events, n_pred_discarded, pred_discarded_by_stage = _events_overlap_mask(
+        pred_events, stage_mask, stage_codes
+    )
+    true_events, n_true_discarded, _ = _events_overlap_mask(
+        true_events, stage_mask, stage_codes
+    )
+
+    return pred_events, true_events, {
+        "pred_total": pred_total_before,
+        "pred_discarded_non_n2": n_pred_discarded,
+        "pred_discarded_by_stage": pred_discarded_by_stage,
+        "true_total": true_total_before,
+        "true_discarded_non_n2": n_true_discarded,
+    }
+
+
+def _match_events(pred_events, true_events, iou_threshold):
+    """Greedy IoU matching. Returns (tp, fp, fn, iou_scores)."""
     tp = 0
     matched = set()
     iou_scores = []
@@ -191,69 +242,185 @@ def compute_event_based_metrics(model,
         best_iou = 0
         best_idx = -1
         for i, t in enumerate(true_events):
-            if i in matched: continue
+            if i in matched:
+                continue
             iou = calculate_iou(p, t)
-            if iou > best_iou: best_iou = iou; best_idx = i
-        if best_iou >= INFERENCE_PARAMS['iou_threshold']:
+            if iou > best_iou:
+                best_iou = iou
+                best_idx = i
+        if best_iou >= iou_threshold:
             tp += 1
             matched.add(best_idx)
             iou_scores.append(best_iou)
 
-    # Calculate false postives
     fp = len(pred_events) - tp
-
-    # Calculate false negatives
     fn = len(true_events) - tp
+    return tp, fp, fn, iou_scores
 
-    # Calculate precision
-    if (tp + fp) > 0:
-        precision = tp / (tp + fp)
+
+def compute_event_based_metrics(model,
+                                subject_ids: list,
+                                processed_data_dir: str,
+                                threshold: float,
+                                data_params: dict,
+                                identifier: str = "fold",
+                                output_dir: str = ".") -> Dict[str, float]:
+    """
+    Each subject's full recording is predicted independently, events are
+    extracted, filtered by N2 stage mask, then aggregated across subjects.
+    """
+    from core.dataset import get_inference_data
+
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    if torch.backends.mps.is_available():
+        device = torch.device('mps')
+    use_gating = TRAINING_PARAMS.get('use_gating_branch')
+
+    model.to(device)
+    model.eval()
+    fs = data_params['fs']
+    step_samples = int((data_params['window_sec'] - data_params['overlap_sec']) * fs)
+    batch_size = TRAINING_PARAMS.get('batch_size', 16)
+
+    all_pred_events_per_subj = []
+    all_true_events_per_subj = []
+    per_subject_stats = []
+    total_pred_discarded = 0
+    total_pred_before = 0
+    total_true_discarded = 0
+    total_true_before = 0
+    aggregate_discarded_by_stage = {}
+
+    for sid in subject_ids:
+        try:
+            loader, stage_mask_full, stage_codes_full = get_inference_data(
+                processed_data_dir, sid, batch_size, data_params
+            )
+        except FileNotFoundError as e:
+            log.warning(f"Skipping {sid}: {e}")
+            continue
+
+        pred_events, true_events, discard_info = _evaluate_single_subject(
+            model, loader, stage_mask_full, stage_codes_full, threshold, fs,
+            step_samples, use_gating, device, sid
+        )
+
+        all_pred_events_per_subj.append(pred_events)
+        all_true_events_per_subj.append(true_events)
+
+        n_pred_kept = len(pred_events)
+        n_pred_disc = discard_info["pred_discarded_non_n2"]
+        n_pred_total = discard_info["pred_total"]
+        pred_disc_pct = (n_pred_disc / n_pred_total * 100) if n_pred_total > 0 else 0.0
+        per_stage = discard_info["pred_discarded_by_stage"]
+
+        per_subject_stats.append({
+            "subject": sid,
+            "pred_total": n_pred_total,
+            "pred_kept_in_n2": n_pred_kept,
+            "pred_discarded_non_n2": n_pred_disc,
+            "pred_discarded_by_stage": per_stage,
+            "true_count": len(true_events),
+        })
+        total_pred_discarded += n_pred_disc
+        total_pred_before += n_pred_total
+        total_true_discarded += discard_info["true_discarded_non_n2"]
+        total_true_before += discard_info["true_total"]
+        for stage, n in per_stage.items():
+            aggregate_discarded_by_stage[stage] = aggregate_discarded_by_stage.get(stage, 0) + n
+
+        # Format per-stage breakdown for log
+        if per_stage:
+            stage_str = ", ".join(f"{s}={n}" for s, n in sorted(per_stage.items()))
+            stage_breakdown_str = f" [{stage_str}]"
+        else:
+            stage_breakdown_str = ""
+
+        log.info(
+            f"  [{sid}] true={len(true_events)}, pred(N2)={n_pred_kept}, "
+            f"pred(non-N2 discarded)={n_pred_disc}/{n_pred_total} "
+            f"({pred_disc_pct:.1f}%){stage_breakdown_str}"
+        )
+
+    gc.collect()
+
+    # Aggregate event-level metrics across subjects (micro-average)
+    iou_threshold = INFERENCE_PARAMS['iou_threshold']
+    tp_total, fp_total, fn_total = 0, 0, 0
+    all_iou_scores = []
+
+    for pred_events, true_events in zip(all_pred_events_per_subj, all_true_events_per_subj):
+        tp, fp, fn, iou_scores = _match_events(pred_events, true_events, iou_threshold)
+        tp_total += tp
+        fp_total += fp
+        fn_total += fn
+        all_iou_scores.extend(iou_scores)
+
+    # Aggregate non-N2 discard statistics
+    pred_discard_pct = (total_pred_discarded / total_pred_before * 100) if total_pred_before > 0 else 0.0
+    if aggregate_discarded_by_stage:
+        agg_stage_str = ", ".join(
+            f"{s}={n}" for s, n in sorted(aggregate_discarded_by_stage.items())
+        )
+        log.info(
+            f"Non-N2 predictions discarded: {total_pred_discarded}/{total_pred_before} "
+            f"({pred_discard_pct:.1f}%) — by stage: [{agg_stage_str}]"
+        )
     else:
-        precision = 0.0
+        log.info(
+            f"Non-N2 predictions discarded: {total_pred_discarded}/{total_pred_before} "
+            f"({pred_discard_pct:.1f}%)"
+        )
+    if total_true_discarded > 0:
+        log.info(
+            f"Non-N2 ground-truth events discarded: "
+            f"{total_true_discarded}/{total_true_before} (sanity check)"
+        )
 
-    # Calculate recall
-    if (tp + fn) > 0:
-        recall = tp / (tp + fn)
-    else:
-        recall = 0.0
+    log.info(f"Aggregate: TP={tp_total}, FP={fp_total}, FN={fn_total}")
 
-    # Calculate F1-score
-    if (precision + recall) > 0:
-        f1 = 2 * precision * recall / (precision + recall)
-    else:
-        f1 = 0.0
+    precision = tp_total / (tp_total + fp_total) if (tp_total + fp_total) > 0 else 0.0
+    recall = tp_total / (tp_total + fn_total) if (tp_total + fn_total) > 0 else 0.0
+    f1 = (2 * precision * recall / (precision + recall)) if (precision + recall) > 0 else 0.0
+    mean_iou = float(np.mean(all_iou_scores)) if all_iou_scores else 0.0
 
+    # Save per-subject + aggregate stats
     try:
         stats_payload = {
-            "subject_id": subject_id,
+            "identifier": identifier,
             "threshold_used": float(threshold),
-            "true_count": len(true_events),
-            "pred_count": len(pred_events),
-            "tp": int(tp),
-            "fp": int(fp),
-            "fn": int(fn),
+            "iou_threshold": float(iou_threshold),
+            "tp": int(tp_total),
+            "fp": int(fp_total),
+            "fn": int(fn_total),
             "f1": float(f1),
             "precision": float(precision),
             "recall": float(recall),
-            "mean_iou": float(np.mean(iou_scores)) if iou_scores else 0.0
+            "mean_iou": mean_iou,
+            "pred_total_before_n2_filter": int(total_pred_before),
+            "pred_discarded_non_n2": int(total_pred_discarded),
+            "pred_discard_pct": round(pred_discard_pct, 2),
+            "pred_discarded_by_stage": aggregate_discarded_by_stage,
+            "per_subject": per_subject_stats,
         }
-
         if output_dir:
             os.makedirs(output_dir, exist_ok=True)
-            json_filename = f"eval_stats_{subject_id}.json"
-            json_path = os.path.join(output_dir, json_filename)
-
+            json_path = os.path.join(output_dir, f"eval_stats_{identifier}.json")
             with open(json_path, 'w') as f:
                 json.dump(stats_payload, f, indent=4)
-
             log.info(f"Saved JSON stats to: {json_path}")
-
     except Exception as e:
-        log.error(f"Failed to save JSON stats for {subject_id}: {e}")
+        log.error(f"Failed to save JSON stats: {e}")
 
-    return {"F1-score": f1, "Precision": precision, "Recall": recall, "TP (events)": tp, "FP (events)": fp,
-            "FN (events)": fn,
-            "mIoU: ": np.mean(iou_scores) if iou_scores else 0.0}
+    return {
+        "F1-score": f1,
+        "Precision": precision,
+        "Recall": recall,
+        "TP (events)": tp_total,
+        "FP (events)": fp_total,
+        "FN (events)": fn_total,
+        "mIoU: ": mean_iou,
+    }
 
 
 def find_optimal_threshold(model, val_loader) -> float:

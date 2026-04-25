@@ -55,6 +55,7 @@ def log_params(logger, name: str, params: dict):
 
 class EnsembleWrapper(nn.Module):
     """Wrapper for averaging predictions from two models."""
+
     def __init__(self, model_a: nn.Module, model_b: nn.Module):
         super().__init__()
         self.model_a = model_a
@@ -72,11 +73,12 @@ class EnsembleWrapper(nn.Module):
 
 
 # Cross-Validation Splits
+
 def get_kfold_splits(subjects: list, fold_idx: int, num_folds: int = 5):
     """K-Fold cross-validation split.
 
     Returns train/val/test subject IDs for a single fold. The val set is the
-    "next" fold (wrapping around), mirroring the SEED paper's approach.
+    "next" fold (wrapping around).
     """
     n = len(subjects)
     fold_sizes = np.full(num_folds, n // num_folds, dtype=int)
@@ -130,6 +132,7 @@ def get_cv_parameters(cv_strategy: str, subjects: list, n_folds: int, logger):
 
 
 # Output directory handling
+
 def setup_output_dir(timestamp: str) -> str:
     """Create and return the master output directory."""
     os.makedirs(paths.REPORTS_DIR, exist_ok=True)
@@ -164,9 +167,14 @@ def parse_eval_directories(run_dir: str):
 
 
 # Fold evaluation
-def evaluate_fold(fold_dir, test_loader, val_loader, num_channels, identifier,
-                  use_swa, logger, data_params):
-    """Evaluate a single fold using best, SWA, and ensemble models."""
+
+def evaluate_fold(fold_dir, test_subject_ids, processed_data_dir, val_loader,
+                  num_channels, identifier, use_swa, logger, data_params):
+    """Evaluate a single fold using best, SWA, and ensemble models.
+
+    Per-subject inference on FULL recordings; events filtered by
+    N2 stage_mask after prediction.
+    """
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     best_path = os.path.join(fold_dir, "unet_model_best.pth")
 
@@ -189,7 +197,8 @@ def evaluate_fold(fold_dir, test_loader, val_loader, num_channels, identifier,
     # Evaluate best model
     save_dir = fold_dir if mode == "none" else None
     metrics_best = compute_event_based_metrics(
-        model_best, test_loader, threshold, data_params, f"{identifier}_best", save_dir
+        model_best, test_subject_ids, processed_data_dir, threshold,
+        data_params, f"{identifier}_best", save_dir,
     )
     log_metrics(logger, "BEST:", metrics_best)
 
@@ -204,14 +213,16 @@ def evaluate_fold(fold_dir, test_loader, val_loader, num_channels, identifier,
 
             save_dir = fold_dir if mode == "swa" else None
             metrics_swa = compute_event_based_metrics(
-                model_swa, test_loader, threshold, data_params, f"{identifier}_swa", save_dir
+                model_swa, test_subject_ids, processed_data_dir, threshold,
+                data_params, f"{identifier}_swa", save_dir,
             )
             log_metrics(logger, "SWA:", metrics_swa)
 
             ensemble = EnsembleWrapper(model_best, model_swa).to(device)
             save_dir = fold_dir if mode == "ensemble" else None
             metrics_ens = compute_event_based_metrics(
-                ensemble, test_loader, threshold, data_params, f"{identifier}_ens", save_dir
+                ensemble, test_subject_ids, processed_data_dir, threshold,
+                data_params, f"{identifier}_ens", save_dir,
             )
             log_metrics(logger, "ENS:", metrics_ens)
         else:

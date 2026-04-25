@@ -9,7 +9,9 @@ import pyedflib
 from scipy.ndimage import label
 import paths
 from utils.logger import setup_logging
-from utils.build_utils import prepare_directories, create_spindle_mask, create_stage_mask
+from utils.build_utils import (
+    prepare_directories, create_spindle_mask, create_stage_mask, create_stage_codes
+)
 from signal_processing import bandpassfilter, normalization
 from utils.signal_visualization import save_model_input_examples, plot_eeg_trace
 from configs.mass_config import DATA_PARAMS
@@ -171,6 +173,78 @@ def segment_data(raw, hypnogram: np.ndarray, raw_unfiltered: np.ndarray = None) 
     )
 
 
+def segment_data_full(raw, hypnogram: np.ndarray) -> tuple:
+    """
+    Segment continuous signal into overlapping windows WITHOUT stage filtering.
+
+    Model predicts the entire recording, and
+    events are filtered by the stage_mask afterwards.
+
+    Returns:
+        tuple: (x_windows_full, y_masks_full_dict, stage_mask_full)
+            - x_windows_full: shape (n_windows, window_samples)
+            - y_masks_full_dict: dict scorer_mode -> shape (n_windows, window_samples)
+            - stage_mask_full: per-sample N2 mask, shape (signal_length,)
+    """
+    fs = raw.info["sfreq"]
+    signal = raw.get_data()[0]
+    signal_length = len(signal)
+
+    window_samples = int(WINDOW_SEC * fs)
+    step_samples = int((WINDOW_SEC - OVERLAP_SEC) * fs)
+
+    # Determine which scorer modes to process (same logic as segment_data)
+    scorer_modes = {}
+    for mode, annots in raw.annotations_by_scorer.items():
+        if len(annots) > 0 or mode == 'E1':
+            scorer_modes[mode] = annots
+
+    spindle_masks = {
+        mode: create_spindle_mask(annots, signal_length, fs)
+        for mode, annots in scorer_modes.items()
+    }
+
+    # Per-sample N2 mask for the whole signal (used at inference time to filter events)
+    if hypnogram is not None:
+        stage_mask_full = create_stage_mask(
+            hypnogram, signal_length, fs, INCLUDED_STAGES, HYPNOGRAM_RESOLUTION_SEC
+        )
+        stage_codes_full = create_stage_codes(
+            hypnogram, signal_length, fs, HYPNOGRAM_RESOLUTION_SEC
+        )
+    else:
+        stage_mask_full = np.ones(signal_length, dtype=np.float32)
+        stage_codes_full = np.full(signal_length, '?', dtype='<U1')
+
+    x_windows_full = []
+    y_masks_full_per_mode = {mode: [] for mode in spindle_masks}
+
+    # Sliding window extraction across the ENTIRE signal — no stage filtering
+    for start in range(0, signal_length - window_samples, step_samples):
+        end = start + window_samples
+
+        window = signal[start:end]
+        if USE_INSTANCE_NORM:
+            window = normalization.normalize_data(window)
+
+        x_windows_full.append(window)
+        for mode, mask in spindle_masks.items():
+            y_masks_full_per_mode[mode].append(mask[start:end])
+
+    x_windows_full = np.array(x_windows_full, dtype=np.float32)
+    y_masks_full_dict = {
+        mode: np.array(masks, dtype=np.float32)
+        for mode, masks in y_masks_full_per_mode.items()
+    }
+
+    log.info(
+        f"  FULL segmentation (no stage filter): {len(x_windows_full)} windows, "
+        f"signal_length={signal_length} samples ({signal_length/fs:.1f}s)"
+    )
+
+    return x_windows_full, y_masks_full_dict, stage_mask_full, stage_codes_full
+
+
 def _process_patient(patient_file_group: dict, processed_dir: Path, plots_dir: Path) -> dict | None:
     """Process a single patient's data."""
     patient_id = patient_file_group["id"]
@@ -253,7 +327,7 @@ def _process_patient(patient_file_group: dict, processed_dir: Path, plots_dir: P
     }
 
     for mode, y_masks in y_masks_dict.items():
-        # Save per-scorer masks
+        # Save per-scorer masks (N2-filtered, used for training)
         y_filename = f"{patient_id}_Y_{mode}.npy"
         np.save(processed_dir / y_filename, y_masks)
         log.info(f"  Saved: {y_filename}")
@@ -275,6 +349,25 @@ def _process_patient(patient_file_group: dict, processed_dir: Path, plots_dir: P
             f"  [{mode}] Windows: {n_pos_windows}/{n_total_windows} positive "
             f"({pos_ratio:.1%}), spindles kept: {n_kept}"
         )
+
+    # FULL data for inference (no stage filtering at window level;
+    # stage_mask is applied to events after prediction)
+    x_full, y_full_dict, stage_mask_full, stage_codes_full = segment_data_full(raw, hypnogram)
+
+    np.save(processed_dir / f"{patient_id}_X_FULL.npy", x_full)
+    log.info(f"  Saved: {patient_id}_X_FULL.npy ({len(x_full)} windows)")
+
+    for mode, y_full in y_full_dict.items():
+        y_full_filename = f"{patient_id}_Y_FULL_{mode}.npy"
+        np.save(processed_dir / y_full_filename, y_full)
+        log.info(f"  Saved: {y_full_filename}")
+
+    np.save(processed_dir / f"{patient_id}_STAGE_MASK_FULL.npy", stage_mask_full)
+    np.save(processed_dir / f"{patient_id}_STAGE_CODES_FULL.npy", stage_codes_full)
+    log.info(
+        f"  Saved: {patient_id}_STAGE_MASK_FULL.npy + STAGE_CODES_FULL.npy "
+        f"({len(stage_mask_full)} samples)"
+    )
 
     return stats
 

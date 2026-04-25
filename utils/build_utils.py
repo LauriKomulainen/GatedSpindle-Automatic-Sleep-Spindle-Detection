@@ -59,3 +59,27 @@ def create_stage_mask(
         if stage in included_stages:
             mask[start:end] = 1.0
     return mask
+
+
+def create_stage_codes(
+    hypnogram: np.ndarray,
+    signal_length: int,
+    fs: float,
+    hypnogram_resolution_sec: float,
+) -> np.ndarray:
+    """Create per-sample stage code array from hypnogram.
+
+    Returns array of single-character stage codes (e.g. 'W', '1', '2', '3', 'R'
+    for MASS or '0'-'5' for DREAMS), one per signal sample. Samples outside
+    any scored epoch get '?'.
+    """
+    codes = np.full(signal_length, '?', dtype='<U1')
+    samples_per_epoch = int(hypnogram_resolution_sec * fs)
+
+    for i, stage in enumerate(hypnogram):
+        start = i * samples_per_epoch
+        if start >= signal_length:
+            break
+        end = min(start + samples_per_epoch, signal_length)
+        codes[start:end] = stage
+    return codes
