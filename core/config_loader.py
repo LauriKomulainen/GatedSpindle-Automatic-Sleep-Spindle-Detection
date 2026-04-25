@@ -1,8 +1,6 @@
 # core/config_loader.py
 
 """
-Centralized dataset config loader.
-
 Reads the dataset name from subject_stats.json in PROCESSED_DATA_DIR
 and exposes the matching model config params. Import the params from
 this module anywhere they are needed.
@@ -53,7 +51,6 @@ def _load_dataset_config():
 
 
 DATASET_NAME, _config = _load_dataset_config()
-
 TRAINING_PARAMS = _config.TRAINING_PARAMS
 INFERENCE_PARAMS = _config.INFERENCE_PARAMS
 POST_PROCESSING_PARAMS = _config.POST_PROCESSING_PARAMS

@@ -1,3 +1,5 @@
+# core/train_model.py
+
 import torch
 import torch.nn as nn
 import logging
@@ -9,6 +11,7 @@ from core.config_loader import TRAINING_PARAMS
 use_gating = TRAINING_PARAMS.get('use_gating_branch')
 seg_weight = TRAINING_PARAMS.get('seg_loss_weight')
 cls_weight = 1.0 - seg_weight
+scheduler_patience=TRAINING_PARAMS['scheduler_patience']
 
 log = logging.getLogger(__name__)
 
@@ -19,13 +22,13 @@ def train_model(model, train_loader, val_loader, learning_rate, num_epochs, earl
     if torch.backends.mps.is_available(): device = torch.device('mps')
 
     model.to(device)
-    weight_decay = TRAINING_PARAMS.get('weight_decay', 1e-2)
+    weight_decay = TRAINING_PARAMS.get('weight_decay')
 
     # Optimizer
     optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate, weight_decay=weight_decay)
 
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-        optimizer, mode='min', factor=0.5, patience=10, min_lr=1e-6
+        optimizer, mode='min', factor=0.5, patience=scheduler_patience, min_lr=1e-6
     )
 
     swa_model = None
@@ -88,6 +91,10 @@ def train_model(model, train_loader, val_loader, learning_rate, num_epochs, earl
 
         model.eval()
         val_loss = 0
+        # Accumulators for sample-level metrics (computed from already-forward-passed outputs)
+        tp_total = 0
+        fp_total = 0
+        fn_total = 0
         with torch.no_grad():
             for x, y_mask, y_label in val_loader:
                 x, y_mask, y_label = x.to(device), y_mask.to(device), y_label.to(device)
@@ -99,8 +106,23 @@ def train_model(model, train_loader, val_loader, learning_rate, num_epochs, earl
                 else:
                     val_loss += l_seg.item()
 
+                # Sample-level metrics: threshold at 0.5, count TP/FP/FN per sample
+                probs = torch.sigmoid(mask_logits.squeeze(1))
+                if use_gating:
+                    probs = probs * torch.sigmoid(gate_logits)
+                preds = (probs >= 0.5).float()
+                truth = y_mask.float()
+                tp_total += int(((preds == 1) & (truth == 1)).sum().item())
+                fp_total += int(((preds == 1) & (truth == 0)).sum().item())
+                fn_total += int(((preds == 0) & (truth == 1)).sum().item())
+
         avg_val = val_loss / len(val_loader)
         val_losses.append(avg_val)
+
+        # Derive sample-level F1/Precision/Recall for this epoch
+        precision = tp_total / (tp_total + fp_total) if (tp_total + fp_total) > 0 else 0.0
+        recall = tp_total / (tp_total + fn_total) if (tp_total + fn_total) > 0 else 0.0
+        f1 = (2 * precision * recall / (precision + recall)) if (precision + recall) > 0 else 0.0
 
         if not use_swa or epoch < swa_start_epoch:
             scheduler.step(avg_val)
@@ -124,7 +146,12 @@ def train_model(model, train_loader, val_loader, learning_rate, num_epochs, earl
         else:
             status_msg = f"{best_tag}(Patience: {patience_counter}/{early_stopping_patience})"
 
-        log.info(f"Epoch {epoch + 1}: Train {avg_train:.4f} | Val {avg_val:.4f} | LR: {lr_now:.6f} | {status_msg}")
+        log.info(
+            f"Epoch {epoch + 1}: Train {avg_train:.4f} | Val {avg_val:.4f} | "
+            f"LR: {lr_now:.6f} | "
+            f"F1: {f1:.3f} | P: {precision:.3f} | R: {recall:.3f} | "
+            f"{status_msg}"
+        )
 
         if not use_swa and patience_counter >= early_stopping_patience:
             log.info(f"Early stopping triggered at epoch {epoch + 1}")

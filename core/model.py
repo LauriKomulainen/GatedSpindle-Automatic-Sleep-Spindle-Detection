@@ -8,7 +8,6 @@ from core.config_loader import TRAINING_PARAMS
 
 kernel_size = TRAINING_PARAMS.get('kernel_size')
 padding = TRAINING_PARAMS.get('padding')
-
 log = logging.getLogger(__name__)
 
 
@@ -21,7 +20,6 @@ class ConvBlock(nn.Module):
     - Conv1D → InstanceNorm
     - Residual (skip) connection
     """
-
     def __init__(self, in_channels, out_channels, kernel_size=kernel_size, padding=padding):
         super(ConvBlock, self).__init__()
 
@@ -63,7 +61,6 @@ class DecoderBlock(nn.Module):
     """
     Decoder block consisting of upsampling followed by a convolutional block.
     """
-
     def __init__(self, in_channels, out_channels, scale_factor=2):
         super(DecoderBlock, self).__init__()
 
@@ -106,13 +103,9 @@ class GatedUNet(nn.Module):
     - Instance normalization and ReLU non-linearities throughout the network
     - A two-layer MLP gating head (256→64→1) operating on globally pooled bottleneck features
     """
-
     def __init__(self, features, dropout_rate=0.2, use_gating_branch=True):
         super(GatedUNet, self).__init__()
         self.use_gating_branch = use_gating_branch
-        """
-        self.skip_lstm3 = TemporalSkipBlock(128) # enc3 → dec1
-        """
 
         # Input normalization
         self.input_norm = nn.InstanceNorm1d(features, affine=True)
@@ -130,20 +123,10 @@ class GatedUNet(nn.Module):
         self.pool3 = nn.MaxPool1d(2)
         self.drop3 = nn.Dropout(dropout_rate)
 
-        """
-        Bottleneck
-
-        NOTE (self): This exact pipeline is documented in Master Thesis Section 7.4.
-        Do not edit, so the text and code stay in sync!
-        """
+        # Bottleneck
         self.bottleneck = ConvBlock(128, 256)
 
-        """
-        Global Gating Branch
-
-        NOTE: This exact pipeline is documented in Master Thesis Section 7.4.
-        Do not edit, so the text and code stay in sync!
-        """
+        # Global Gating Branch
         if self.use_gating_branch:
             self.global_pool = nn.AdaptiveAvgPool1d(1)
             self.gate_fc = nn.Sequential(
@@ -187,11 +170,6 @@ class GatedUNet(nn.Module):
             gate_logits = torch.zeros(x.size(0), 1, device=x.device)
 
         # Decoder forward pass
-        """
-        d1 = self.dec1(b, self.skip_lstm3(e3))
-
-        d1 = self.dec1(b, e3)
-        """
         d1 = self.dec1(b, e3)
         d2 = self.dec2(d1, e2)
         d3 = self.dec3(d2, e1)

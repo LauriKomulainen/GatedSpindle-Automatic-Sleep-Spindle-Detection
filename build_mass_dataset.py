@@ -289,8 +289,6 @@ def _process_patient(patient_file_group: dict, processed_dir: Path, plots_dir: P
         "scorers": {},
     }
 
-    default_scorer = DATA_PARAMS.get('scorer_mode', 'UNION')
-
     for mode, y_masks in y_masks_dict.items():
         # Save per-scorer masks
         y_filename = f"{patient_id}_Y_{mode}.npy"
@@ -314,17 +312,6 @@ def _process_patient(patient_file_group: dict, processed_dir: Path, plots_dir: P
             f"  [{mode}] Windows: {n_pos_windows}/{n_total_windows} positive "
             f"({pos_ratio:.1%}), spindles kept: {n_kept}"
         )
-
-    # Create backward-compatible Y_1D.npy (points to default scorer mode)
-    default_y = y_masks_dict.get(default_scorer)
-    if default_y is not None:
-        np.save(processed_dir / f"{patient_id}_Y_1D.npy", default_y)
-        log.info(f"  Saved: {patient_id}_Y_1D.npy (default={default_scorer})")
-
-    # Add summary counts for default mode
-    default_counts = n_spindle_counts.get(default_scorer, (0, 0))
-    stats["union"] = default_counts[0]
-    stats["kept"] = default_counts[1]
 
     return stats
 

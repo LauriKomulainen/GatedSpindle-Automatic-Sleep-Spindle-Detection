@@ -11,6 +11,7 @@ TRAINING_PARAMS = {
     'use_gating_branch': True,
     'seg_loss_weight': 0.85,
     'kernel_size': 11,
+    'scheduler_patience': 3,
 }
 TRAINING_PARAMS['padding'] = (TRAINING_PARAMS['kernel_size'] - 1) // 2
 

@@ -9,9 +9,6 @@ from signal_processing.bandpassfilter import apply_bandpass_filter
 def compute_input_channels(raw_signal_np, fs):
     """
     Compute multi-channel input: Raw EEG, Sigma band, Hilbert Envelope.
-
-    NOTE: This exact pipeline is documented in Master Thesis Section 7.3.
-    Do not edit, so the text and code stay in sync!
     """
     channels = []
 

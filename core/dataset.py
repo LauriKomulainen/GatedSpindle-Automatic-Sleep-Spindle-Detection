@@ -7,11 +7,14 @@ Supports runtime scorer mode selection: the correct Y mask file is loaded
 based on data_params['scorer_mode'] without needing to rebuild the dataset.
 
 File naming convention:
-    {subject_id}_X_1D.npy       - Signal windows (always present)
+    {subject_id}_X_1D.npy       - Signal windows (always required)
     {subject_id}_Y_E1.npy       - Expert 1 masks (MASS only)
     {subject_id}_Y_E2.npy       - Expert 2 masks (MASS, 15/19 subjects)
     {subject_id}_Y_UNION.npy    - Merged E1+E2 masks (MASS only)
-    {subject_id}_Y_1D.npy       - Default/legacy masks (always present)
+    {subject_id}_Y_1D.npy       - DREAMS masks (single scorer setup)
+
+Strict file requirements: when scorer_mode is set, the matching Y_{mode}.npy
+file MUST exist. There is no silent fallback to Y_1D.npy.
 """
 
 import os
@@ -68,25 +71,32 @@ def _get_data_paths(data_dir: str, subject_id: str, scorer_mode: str = None) -> 
     """
     Return (x_path, y_path) for a subject.
 
-    For MASS dataset with scorer-specific masks:
-    - Tries {id}_Y_{scorer_mode}.npy first (e.g., _Y_E1.npy)
-    - Falls back to {id}_Y_1D.npy if scorer-specific file not found
+    If scorer_mode is given (MASS): requires {id}_Y_{scorer_mode}.npy to exist.
+    If scorer_mode is None (DREAMS): uses {id}_Y_1D.npy.
+
+    Raises FileNotFoundError if a required file is missing — no silent fallback.
 
     Args:
         data_dir: Directory containing processed .npy files
         subject_id: Subject identifier (e.g., '01-02-0001')
-        scorer_mode: One of 'E1', 'E2', 'UNION', or None for default
+        scorer_mode: One of 'E1', 'E2', 'UNION', or None for DREAMS-style default
     """
     x_path = os.path.join(data_dir, f"{subject_id}_X_1D.npy")
+    if not os.path.exists(x_path):
+        raise FileNotFoundError(f"Missing X file: {x_path}")
 
-    # Try scorer-specific Y file first
     if scorer_mode and scorer_mode in ('E1', 'E2', 'UNION'):
-        y_path_scorer = os.path.join(data_dir, f"{subject_id}_Y_{scorer_mode}.npy")
-        if os.path.exists(y_path_scorer):
-            return x_path, y_path_scorer
+        y_path = os.path.join(data_dir, f"{subject_id}_Y_{scorer_mode}.npy")
+        if not os.path.exists(y_path):
+            raise FileNotFoundError(
+                f"Missing scorer-specific Y file: {y_path}. "
+                f"Rebuild the dataset or use a different scorer_mode."
+            )
+    else:
+        y_path = os.path.join(data_dir, f"{subject_id}_Y_1D.npy")
+        if not os.path.exists(y_path):
+            raise FileNotFoundError(f"Missing Y file: {y_path}")
 
-    # Fall back to default
-    y_path = os.path.join(data_dir, f"{subject_id}_Y_1D.npy")
     return x_path, y_path
 
 
@@ -94,14 +104,16 @@ def _filter_valid_subjects(data_dir: str, subject_ids: list, scorer_mode: str = 
     """
     Return only subjects that have both X and Y files for the given scorer mode.
 
-    This is where E2-mode correctly filters out subjects without E2 annotations,
+    For E2/UNION mode this correctly filters out subjects without those annotations
     WITHOUT requiring a rebuild of the dataset.
     """
     valid = []
     for sid in subject_ids:
-        x_path, y_path = _get_data_paths(data_dir, sid, scorer_mode)
-        if os.path.exists(x_path) and os.path.exists(y_path):
+        try:
+            _get_data_paths(data_dir, sid, scorer_mode)
             valid.append(sid)
+        except FileNotFoundError:
+            pass
     return valid
 
 
