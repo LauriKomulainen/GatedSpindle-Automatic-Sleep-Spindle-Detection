@@ -8,11 +8,18 @@ from signal_processing.bandpassfilter import apply_bandpass_filter
 
 def compute_input_channels(raw_signal_np, fs):
     """
-    Compute multi-channel input: Raw EEG, Sigma band, Hilbert Envelope.
+    Compute multi-channel input tensor for the model.
+
+    Active channels:
+        CH1: Preprocessed EEG (raw input from preprocessing stage)
+        CH2: Sigma band (11-16 Hz)
+
+    To add a new channel, compute it below and append to `channels`.
+    Each channel must have shape (1, signal_length) and dtype float32.
     """
     channels = []
 
-    # CH1: Raw EEG
+    # CH1: "Raw" EEG
     ch1 = torch.tensor(raw_signal_np, dtype=torch.float32).unsqueeze(0)
     channels.append(ch1)
 
@@ -22,11 +29,14 @@ def compute_input_channels(raw_signal_np, fs):
     ch2 = torch.tensor(sigma_signal.copy(), dtype=torch.float32).unsqueeze(0)
     channels.append(ch2)
 
-    # CH3: Hilbert Envelope
-    analytic_signal = hilbert(sigma_signal)
-    amplitude_envelope = np.abs(analytic_signal)
-    env_norm = normalize_data(amplitude_envelope)
-    ch3 = torch.tensor(env_norm.copy(), dtype=torch.float32).unsqueeze(0)
-    channels.append(ch3)
+    # Optional channels for future usage
+    # Uncomment the block below to include the Hilbert amplitude envelope
+    # of the sigma band as an additional channel.
+    #
+    # analytic_signal = hilbert(sigma_signal)
+    # amplitude_envelope = np.abs(analytic_signal)
+    # env_norm = normalize_data(amplitude_envelope)
+    # ch_hilbert = torch.tensor(env_norm.copy(), dtype=torch.float32).unsqueeze(0)
+    # channels.append(ch_hilbert)
 
     return torch.cat(channels, dim=0)
