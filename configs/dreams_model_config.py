@@ -1,30 +1,34 @@
 # configs/dreams_model_config.py
 
+# dreams_model_config.py
 TRAINING_PARAMS = {
     'batch_size': 16,
     'learning_rate': 1e-4,
     'dropout_rate': 0.2,
     'weight_decay': 1e-4,
-    'num_epochs': 200,
-    'early_stopping_patience': 25,
-    'use_swa': True,
-    'use_gating_branch': True,
+    'num_epochs': 100,
+    'early_stopping_patience': 20,
+    'use_swa': False,               # Options: False, True
+    'use_gating_branch': False,     # Options: False, True
     'seg_loss_weight': 0.6,
-    'kernel_size': 7,
-    'scheduler_patience': 10,
+    'kernel_size': 11,
+    'lr_scheduler': 'cosine',       # Options: 'cosine', 'plateau'
 }
+
 TRAINING_PARAMS['padding'] = (TRAINING_PARAMS['kernel_size'] - 1) // 2
+TRAINING_PARAMS['scheduler_patience'] = (TRAINING_PARAMS['early_stopping_patience'] - 1) // 2
 
 INFERENCE_PARAMS = {
     'iou_threshold': 0.2,
-    'fixed_threshold': 0.65,
-    'inference_mode': 'ensemble', # Options: none (best), swa, ensemble
+    'fixed_threshold': None,    # None, thresholds in the range 0.5–0.9 (steps of 0.1), done during of validation.
+    'inference_mode': 'best',   # Options: 'best', 'swa', 'ensemble'
+    'use_tta': True,            # Options: False, True
 }
 
 POST_PROCESSING_PARAMS = {
     'min_duration_sec': 0.5,
     'gap_thresh_sec': 0.3,
-    'fixed_border_thresh': 0.1,
+    'fixed_border_thresh': 0.2,
 }
 
 SIGNAL_VISUALIZATION_PARAMS = {

@@ -27,9 +27,19 @@ def train_model(model, train_loader, val_loader, learning_rate, num_epochs, earl
     # Optimizer
     optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate, weight_decay=weight_decay)
 
-    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-        optimizer, mode='min', factor=0.5, patience=scheduler_patience, min_lr=1e-6
-    )
+    scheduler_type = TRAINING_PARAMS.get('lr_scheduler', 'plateau')
+    if scheduler_type == 'cosine':
+        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+            optimizer, T_max=num_epochs, eta_min=1e-6
+        )
+        log.info(f"Using CosineAnnealingLR (T_max={num_epochs}, eta_min=1e-6)")
+    elif scheduler_type == 'plateau':
+        scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+            optimizer, mode='min', factor=0.5, patience=scheduler_patience, min_lr=1e-6
+        )
+        log.info(f"Using ReduceLROnPlateau (patience={scheduler_patience})")
+    else:
+        raise ValueError(f"Unknown lr_scheduler: {scheduler_type}")
 
     swa_model = None
     swa_scheduler = None
@@ -125,7 +135,10 @@ def train_model(model, train_loader, val_loader, learning_rate, num_epochs, earl
         f1 = (2 * precision * recall / (precision + recall)) if (precision + recall) > 0 else 0.0
 
         if not use_swa or epoch < swa_start_epoch:
-            scheduler.step(avg_val)
+            if scheduler_type == 'cosine':
+                scheduler.step()
+            else:
+                scheduler.step(avg_val)
 
         status_msg = ""
         if avg_val < best_val_loss:

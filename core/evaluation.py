@@ -166,7 +166,8 @@ def _events_overlap_mask(events: list, stage_mask: np.ndarray,
 
 
 def _evaluate_single_subject(model, loader, stage_mask_full, stage_codes_full,
-                             threshold, fs, step_samples, use_gating, device, subject_id):
+                             threshold, fs, step_samples, use_gating, use_tta,
+                             device, subject_id):
     """Run inference on one subject's FULL recording, return (pred_events, true_events, info)."""
     all_probs_list, all_masks_list = [], []
 
@@ -178,15 +179,15 @@ def _evaluate_single_subject(model, loader, stage_mask_full, stage_codes_full,
             if use_gating:
                 final_prob = final_prob * torch.sigmoid(gate_logits).unsqueeze(2)
 
-            # TTA
-            inputs_flip = torch.flip(inputs, dims=[2])
-            m_f, g_f = model(inputs_flip)
-            final_prob_flip = torch.flip(torch.sigmoid(m_f), dims=[2])
-            if use_gating:
-                final_prob_flip = final_prob_flip * torch.sigmoid(g_f).unsqueeze(2)
+            if use_tta:
+                inputs_flip = torch.flip(inputs, dims=[2])
+                m_f, g_f = model(inputs_flip)
+                final_prob_flip = torch.flip(torch.sigmoid(m_f), dims=[2])
+                if use_gating:
+                    final_prob_flip = final_prob_flip * torch.sigmoid(g_f).unsqueeze(2)
+                final_prob = (final_prob + final_prob_flip) / 2.0
 
-            avg_prob = (final_prob + final_prob_flip) / 2.0
-            all_probs_list.append(avg_prob.cpu().float())
+            all_probs_list.append(final_prob.cpu().float())
             all_masks_list.append(masks.cpu().float())
 
     all_probs = torch.cat(all_probs_list, dim=0)
@@ -275,12 +276,15 @@ def compute_event_based_metrics(model,
     if torch.backends.mps.is_available():
         device = torch.device('mps')
     use_gating = TRAINING_PARAMS.get('use_gating_branch')
+    use_tta = INFERENCE_PARAMS.get('use_tta', False)
 
     model.to(device)
     model.eval()
     fs = data_params['fs']
     step_samples = int((data_params['window_sec'] - data_params['overlap_sec']) * fs)
     batch_size = TRAINING_PARAMS.get('batch_size', 16)
+
+    log.info(f"Inference: use_tta={use_tta}, use_gating={use_gating}, threshold={threshold:.3f}")
 
     all_pred_events_per_subj = []
     all_true_events_per_subj = []
@@ -302,7 +306,7 @@ def compute_event_based_metrics(model,
 
         pred_events, true_events, discard_info = _evaluate_single_subject(
             model, loader, stage_mask_full, stage_codes_full, threshold, fs,
-            step_samples, use_gating, device, sid
+            step_samples, use_gating, use_tta, device, sid
         )
 
         all_pred_events_per_subj.append(pred_events)
@@ -423,5 +427,109 @@ def compute_event_based_metrics(model,
     }
 
 
-def find_optimal_threshold(model, val_loader) -> float:
-    return 0.50
+def find_optimal_threshold(model, subject_ids, processed_data_dir, data_params,
+                           threshold_grid=None, logger=None):
+    """
+    Find F1-optimal threshold by caching probability series per subject and
+    sweeping thresholds over the cached series. Inference runs once per subject.
+    """
+    from core.dataset import get_inference_data
+
+    if logger is None:
+        logger = log
+    if threshold_grid is None:
+        threshold_grid = np.arange(0.50, 0.91, 0.1)
+
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    if torch.backends.mps.is_available():
+        device = torch.device('mps')
+
+    use_gating = TRAINING_PARAMS.get('use_gating_branch')
+    use_tta = INFERENCE_PARAMS.get('use_tta', False)
+    fs = data_params['fs']
+    step_samples = int((data_params['window_sec'] - data_params['overlap_sec']) * fs)
+    batch_size = TRAINING_PARAMS.get('batch_size', 16)
+    fixed_border_thresh = POST_PROCESSING_PARAMS['fixed_border_thresh']
+    iou_threshold = INFERENCE_PARAMS['iou_threshold']
+
+    model.to(device).eval()
+
+    # 1) Cache stitched probabilities + ground truth per subject (inference ONCE)
+    cached = []  # list of dicts: prob_1d, true_events, stage_mask, stage_codes
+    for sid in subject_ids:
+        try:
+            loader, stage_mask_full, stage_codes_full = get_inference_data(
+                processed_data_dir, sid, batch_size, data_params
+            )
+        except FileNotFoundError as e:
+            logger.warning(f"Skipping {sid}: {e}")
+            continue
+
+        all_probs_list, all_masks_list = [], []
+        with torch.no_grad():
+            for inputs, masks, _ in tqdm(loader, desc=f"Caching ({sid})"):
+                inputs = inputs.to(device)
+                mask_logits, gate_logits = model(inputs)
+                final_prob = torch.sigmoid(mask_logits)
+                if use_gating:
+                    final_prob = final_prob * torch.sigmoid(gate_logits).unsqueeze(2)
+                if use_tta:
+                    inputs_flip = torch.flip(inputs, dims=[2])
+                    m_f, g_f = model(inputs_flip)
+                    final_prob_flip = torch.flip(torch.sigmoid(m_f), dims=[2])
+                    if use_gating:
+                        final_prob_flip = final_prob_flip * torch.sigmoid(g_f).unsqueeze(2)
+                    final_prob = (final_prob + final_prob_flip) / 2.0
+                all_probs_list.append(final_prob.cpu().float())
+                all_masks_list.append(masks.cpu().float())
+
+        all_probs = torch.cat(all_probs_list, dim=0)
+        all_masks = torch.cat(all_masks_list, dim=0).unsqueeze(1)
+        prob_1d = stitch_predictions_1d(all_probs, step_samples)
+        mask_1d = stitch_predictions_1d(all_masks, step_samples)
+
+        # Ground truth events are threshold-independent — compute once
+        true_events = find_events_dual_thresh(
+            (mask_1d >= 0.4).astype(float), 0.5, 0.1, fs
+        )
+        n_common = min(len(stage_mask_full), len(prob_1d))
+        stage_mask = stage_mask_full[:n_common]
+        stage_codes = stage_codes_full[:n_common] if stage_codes_full is not None else None
+
+        # Filter true events by N2 once
+        true_events, _, _ = _events_overlap_mask(true_events, stage_mask, stage_codes)
+
+        cached.append({
+            "sid": sid,
+            "prob_1d": prob_1d,
+            "true_events": true_events,
+            "stage_mask": stage_mask,
+            "stage_codes": stage_codes,
+        })
+        del all_probs_list, all_masks_list, all_probs, all_masks, mask_1d
+        gc.collect()
+
+    # 2) Sweep thresholds over cached probabilities (no GPU work)
+    best_f1, best_t = -1.0, float(threshold_grid[0])
+    for t in threshold_grid:
+        tp_total, fp_total, fn_total = 0, 0, 0
+        for c in cached:
+            pred_events = find_events_dual_thresh(
+                c["prob_1d"], float(t), fixed_border_thresh, fs
+            )
+            pred_events, _, _ = _events_overlap_mask(
+                pred_events, c["stage_mask"], c["stage_codes"]
+            )
+            tp, fp, fn, _ = _match_events(pred_events, c["true_events"], iou_threshold)
+            tp_total += tp; fp_total += fp; fn_total += fn
+
+        prec = tp_total / (tp_total + fp_total) if (tp_total + fp_total) > 0 else 0.0
+        rec = tp_total / (tp_total + fn_total) if (tp_total + fn_total) > 0 else 0.0
+        f1 = (2 * prec * rec / (prec + rec)) if (prec + rec) > 0 else 0.0
+
+        if f1 > best_f1:
+            best_f1 = f1
+            best_t = float(t)
+
+    logger.info(f"Optimal threshold: {best_t:.3f}  (F1={best_f1:.3f})")
+    return best_t

@@ -132,7 +132,6 @@ def get_cv_parameters(cv_strategy: str, subjects: list, n_folds: int, logger):
 
 
 # Output directory handling
-
 def setup_output_dir(timestamp: str) -> str:
     """Create and return the master output directory."""
     os.makedirs(paths.REPORTS_DIR, exist_ok=True)
@@ -167,79 +166,89 @@ def parse_eval_directories(run_dir: str):
 
 
 # Fold evaluation
-
-def evaluate_fold(fold_dir, test_subject_ids, processed_data_dir, val_loader,
+def evaluate_fold(fold_dir, test_subject_ids, val_subject_ids, processed_data_dir,
                   num_channels, identifier, use_swa, logger, data_params):
-    """Evaluate a single fold using best, SWA, and ensemble models.
-
-    Per-subject inference on FULL recordings; events filtered by
-    N2 stage_mask after prediction.
-    """
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    if torch.backends.mps.is_available():
+        device = torch.device("mps")
     best_path = os.path.join(fold_dir, "unet_model_best.pth")
 
     if not os.path.exists(best_path):
         logger.warning(f"Best model not found: {best_path}")
         return None
 
-    # Load best model
+    # Normalize mode: accept None, "none", "best" all as "best-only"
+    mode = INFERENCE_PARAMS["inference_mode"]
+    if mode in (None, "none", "best"):
+        mode = "best"
+    elif mode not in ("swa", "ensemble"):
+        logger.warning(f"Unknown inference_mode '{mode}', defaulting to 'best'")
+        mode = "best"
+
+    threshold = INFERENCE_PARAMS["fixed_threshold"]
+    if threshold is None:
+        # Optimize threshold on validation subjects using full event-based pipeline.
+        # Inference runs once per subject; thresholds are swept over cached probs.
+        model_for_thr = GatedUNet(num_channels, dropout_rate=0.0).to(device)
+        model_for_thr.load_state_dict(torch.load(best_path, map_location=device))
+        threshold = find_optimal_threshold(
+            model_for_thr,
+            val_subject_ids,
+            processed_data_dir,
+            data_params,
+            logger=logger,
+        )
+        del model_for_thr
+        torch.cuda.empty_cache()
+        gc.collect()
+
+    # Always load BEST (needed for "best" and "ensemble" modes)
     model_best = GatedUNet(num_channels, dropout_rate=0.0).to(device)
     model_best.load_state_dict(torch.load(best_path, map_location=device))
     logger.info(f"Loaded model from {best_path}")
+    logger.info(f"Using threshold: {threshold:.3f}")
 
-    # Determine threshold
-    threshold = INFERENCE_PARAMS["fixed_threshold"]
-    if threshold is None:
-        threshold = find_optimal_threshold(model_best, val_loader)
+    final_metrics = None
 
-    mode = INFERENCE_PARAMS["inference_mode"]
+    if mode == "best":
+        final_metrics = compute_event_based_metrics(
+            model_best, test_subject_ids, processed_data_dir, threshold,
+            data_params, f"{identifier}_best", fold_dir,
+        )
+        log_metrics(logger, "BEST:", final_metrics)
 
-    # Evaluate best model
-    save_dir = fold_dir if mode == "none" else None
-    metrics_best = compute_event_based_metrics(
-        model_best, test_subject_ids, processed_data_dir, threshold,
-        data_params, f"{identifier}_best", save_dir,
-    )
-    log_metrics(logger, "BEST:", metrics_best)
-
-    metrics_swa, metrics_ens, model_swa = None, None, None
-
-    # Evaluate SWA and ensemble if enabled
-    if use_swa:
+    elif mode == "swa":
         swa_path = os.path.join(fold_dir, "unet_model_swa.pth")
-        if os.path.exists(swa_path):
-            model_swa = GatedUNet(num_channels, dropout_rate=0.0).to(device)
-            model_swa.load_state_dict(torch.load(swa_path, map_location=device))
-
-            save_dir = fold_dir if mode == "swa" else None
-            metrics_swa = compute_event_based_metrics(
-                model_swa, test_subject_ids, processed_data_dir, threshold,
-                data_params, f"{identifier}_swa", save_dir,
-            )
-            log_metrics(logger, "SWA:", metrics_swa)
-
-            ensemble = EnsembleWrapper(model_best, model_swa).to(device)
-            save_dir = fold_dir if mode == "ensemble" else None
-            metrics_ens = compute_event_based_metrics(
-                ensemble, test_subject_ids, processed_data_dir, threshold,
-                data_params, f"{identifier}_ens", save_dir,
-            )
-            log_metrics(logger, "ENS:", metrics_ens)
-        else:
-            logger.info("SWA model not found, skipping SWA/Ensemble evaluation")
-
-    # Select final metrics based on mode
-    final_metrics = metrics_best
-    if mode == "swa" and metrics_swa:
-        final_metrics = metrics_swa
-    elif mode == "ensemble" and metrics_ens:
-        final_metrics = metrics_ens
-
-    # Cleanup
-    del model_best
-    if model_swa:
+        if not os.path.exists(swa_path):
+            logger.error(f"SWA mode requested but {swa_path} not found")
+            del model_best
+            return None
+        model_swa = GatedUNet(num_channels, dropout_rate=0.0).to(device)
+        model_swa.load_state_dict(torch.load(swa_path, map_location=device))
+        final_metrics = compute_event_based_metrics(
+            model_swa, test_subject_ids, processed_data_dir, threshold,
+            data_params, f"{identifier}_swa", fold_dir,
+        )
+        log_metrics(logger, "SWA:", final_metrics)
         del model_swa
+
+    elif mode == "ensemble":
+        swa_path = os.path.join(fold_dir, "unet_model_swa.pth")
+        if not os.path.exists(swa_path):
+            logger.error(f"Ensemble mode requested but {swa_path} not found")
+            del model_best
+            return None
+        model_swa = GatedUNet(num_channels, dropout_rate=0.0).to(device)
+        model_swa.load_state_dict(torch.load(swa_path, map_location=device))
+        ensemble = EnsembleWrapper(model_best, model_swa).to(device)
+        final_metrics = compute_event_based_metrics(
+            ensemble, test_subject_ids, processed_data_dir, threshold,
+            data_params, f"{identifier}_ens", fold_dir,
+        )
+        log_metrics(logger, "ENS:", final_metrics)
+        del model_swa
+
+    del model_best
     torch.cuda.empty_cache()
     gc.collect()
-
     return final_metrics
