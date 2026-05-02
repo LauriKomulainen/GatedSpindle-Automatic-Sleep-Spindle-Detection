@@ -79,6 +79,17 @@ def main():
     parser.add_argument("--seed", type=int, default=0, nargs="?", const=None)
     parser.add_argument("--repeats", type=int, default=1)
     parser.add_argument("--shuffle_folds", action="store_true")
+    parser.add_argument(
+        "--fold_split",
+        type=str,
+        default="shuffled",
+        choices=["shuffled", "sequential"],
+        help="How to assign subjects to CV folds. "
+             "'shuffled' (default): seeded random permutation per repeat, as in SEED. "
+             "'sequential': subjects assigned to folds in their listed order, "
+             "producing fixed contiguous test sets (e.g. fold 1 = subjects 1-4, "
+             "fold 2 = subjects 5-8, ...). Same across repeats.",
+    )
     args = parser.parse_args()
 
     base_seed = args.seed if args.seed is not None else random.randint(1, 99999)
@@ -125,6 +136,7 @@ def main():
 
     log.info(f"Cross validation strategy: {strategy_name}")
     log.info(f"Scorer mode: {scorer_mode}")
+    log.info(f"Fold split mode: {args.fold_split}")
 
     folds_to_run = CV_CONFIG.get("folds_to_run") or range(num_folds)
     grand_results = defaultdict(list)
@@ -141,12 +153,17 @@ def main():
         elif not os.path.exists(repeat_dir):
             continue
 
-        # Shuffle subjects for each repeat using the current seed.
-        # This gives SEED-style random splits that differ per repeat.
+        # Determine subject order for fold assignment
         fold_subjects = subjects.copy()
-        rng = random.Random(current_seed)
-        rng.shuffle(fold_subjects)
-        log.info(f"Subjects shuffled for repeat (seed={current_seed}).")
+        if args.fold_split == "shuffled":
+            # SEED-style: seeded random permutation, differs per repeat
+            rng = random.Random(current_seed)
+            rng.shuffle(fold_subjects)
+            log.info(f"Subjects shuffled for repeat (seed={current_seed}).")
+        else:
+            # Sequential: subjects kept in their original listed order.
+            # Folds become fixed contiguous blocks, identical across repeats.
+            log.info(f"Subjects kept in listed order (sequential fold assignment).")
 
         repeat_metrics = defaultdict(list)
 
@@ -202,8 +219,14 @@ def main():
 
             try:
                 metrics = evaluate_fold(
-                    fold_dir, test_ids, paths.PROCESSED_DATA_DIR, val_loader,
-                    num_channels, identifier, use_swa, log,
+                    fold_dir,
+                    test_ids,
+                    val_ids,
+                    paths.PROCESSED_DATA_DIR,
+                    num_channels,
+                    identifier,
+                    use_swa,
+                    log,
                     {**DATA_PARAMS, "scorer_mode": scorer_mode},
                 )
                 if metrics:

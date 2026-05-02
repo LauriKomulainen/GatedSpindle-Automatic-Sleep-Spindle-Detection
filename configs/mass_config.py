@@ -31,12 +31,6 @@ DATA_PARAMS = {
 }
 
 # 2. Cross-Validation Configuration
-#
-# The subject pool used for CV is determined by scorer_mode:
-#   - E1    -> 19 subjects (matches SpindleU-Net and Spindle-UMamba papers using E1)
-#   - E2    -> 15 subjects (matches both papers using E2)
-#   - UNION -> 15 subjects
-
 CV_CONFIG = {
     'scorer_mode': 'E2',    # 'E1' | 'E2' | 'UNION'
     'cv_strategy': 'kfold', # 'kfold' | 'loso'
