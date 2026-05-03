@@ -19,15 +19,17 @@ TRAINING_PARAMS['scheduler_patience'] = (TRAINING_PARAMS['early_stopping_patienc
 
 INFERENCE_PARAMS = {
     'iou_threshold': 0.2,
-    'fixed_threshold': None,    # None, thresholds in the range 0.5–0.9 (steps of 0.1), done during of validation.
+    'fixed_threshold': None,    # None, thresholds in the range 0.3–0.9 (steps of 0.1), done during of validation.
     'inference_mode': 'best',   # Options: 'best', 'swa', 'ensemble'
-    'use_tta': False,            # Options: False, True
+    'use_tta': True,            # Options: False, True
 }
 
 POST_PROCESSING_PARAMS = {
     'min_duration_sec': 0.5,
     'gap_thresh_sec': 0.3,
-    'fixed_border_thresh': 0.2,
+    'fixed_border_thresh': False,   # False = disabled (single-threshold mode).
+                                    # Set to a float (e.g. 0.2) to enable
+                                    # dual-thresholding with that border.
 }
 
 SIGNAL_VISUALIZATION_PARAMS = {

@@ -21,32 +21,69 @@ def merge_close_events(events: List[Tuple[int, int]], fs: float, gap_thresh_sec)
     return merged
 
 
-def find_events_dual_thresh(prob_1d: np.ndarray, peak_thresh: float, border_thresh: float, fs: float) -> List[
-    Tuple[int, int]]:
-    min_samples = POST_PROCESSING_PARAMS['min_duration_sec'] * fs
-    gap_thresh_sec = POST_PROCESSING_PARAMS['gap_thresh_sec']
+def find_events_dual_thresh(prob_1d: np.ndarray, peak_thresh: float,
+                            border_thresh, fs: float,
+                            gap_thresh_sec=None) -> List[Tuple[int, int]]:
+    """Extract events from a 1D probability/mask series.
 
-    candidates = (prob_1d > border_thresh).astype(int)
+    Parameters
+    ----------
+    prob_1d : np.ndarray
+        Per-sample probability or binary mask series.
+    peak_thresh : float
+        Minimum peak probability required for an event to be retained.
+    border_thresh : float or False
+        If False, dual-thresholding is disabled and `peak_thresh` is used as
+        the single thresholding boundary. If a float (e.g. 0.2), candidates
+        are first formed at `border_thresh` and then filtered by
+        `peak_thresh`.
+    fs : float
+        Sampling rate (Hz).
+    gap_thresh_sec : float or None
+        If a float, events closer than this many seconds are merged and
+        events shorter than `min_duration_sec` are discarded. If None, no
+        post-processing is applied: events are returned as-is, preserving
+        the raw event boundaries. Use None for ground-truth annotations,
+        which represent the scorer's intended event boundaries and should
+        not be modified.
+    """
+    min_samples = POST_PROCESSING_PARAMS['min_duration_sec'] * fs
+
+    # Single-threshold mode: border disabled
+    if border_thresh is False or border_thresh is None:
+        candidates = (prob_1d > peak_thresh).astype(int)
+    else:
+        candidates = (prob_1d > border_thresh).astype(int)
+
     diff = np.diff(candidates, prepend=0)
     starts = np.where(diff == 1)[0]
     ends = np.where(diff == -1)[0]
 
     raw_events = []
     for start, end in zip(starts, ends):
-        segment_probs = prob_1d[start:end]
-        if np.max(segment_probs) >= peak_thresh:
+        if border_thresh is False or border_thresh is None:
+            # Already thresholded at peak_thresh, no extra check needed
             raw_events.append((start, end))
+        else:
+            segment_probs = prob_1d[start:end]
+            if np.max(segment_probs) >= peak_thresh:
+                raw_events.append((start, end))
 
     if not raw_events:
         return []
 
-    merged_events = merge_close_events(raw_events, fs, gap_thresh_sec)
-
-    final_events = []
-    for start, end in merged_events:
-        duration = end - start
-        if min_samples <= duration:
-            final_events.append((start, end))
+    # Merging and minimum-duration filtering are opt-in.
+    # Ground-truth annotations (called with gap_thresh_sec=None) bypass both
+    # steps so that expert markings are preserved exactly as scored.
+    if gap_thresh_sec is not None:
+        events_to_filter = merge_close_events(raw_events, fs, gap_thresh_sec)
+        final_events = []
+        for start, end in events_to_filter:
+            duration = end - start
+            if min_samples <= duration:
+                final_events.append((start, end))
+    else:
+        final_events = raw_events
 
     return final_events
 

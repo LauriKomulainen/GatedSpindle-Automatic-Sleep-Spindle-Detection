@@ -10,6 +10,7 @@ from tqdm import tqdm
 from typing import Dict
 from postprocessing.postprocessing import stitch_predictions_1d, find_events_dual_thresh, calculate_iou
 from core.config_loader import POST_PROCESSING_PARAMS, INFERENCE_PARAMS, TRAINING_PARAMS
+from core.dataset import get_inference_data
 
 log = logging.getLogger(__name__)
 
@@ -199,13 +200,18 @@ def _evaluate_single_subject(model, loader, stage_mask_full, stage_codes_full,
     mask_1d = stitch_predictions_1d(all_masks, step_samples)
 
     fixed_border_thresh = POST_PROCESSING_PARAMS['fixed_border_thresh']
+    gap_thresh_sec = POST_PROCESSING_PARAMS['gap_thresh_sec']
 
-    # Predicted events (across the entire recording)
-    pred_events = find_events_dual_thresh(prob_1d, threshold, fixed_border_thresh, fs)
+    # Predicted events (across the entire recording) — model output gets merged
+    pred_events = find_events_dual_thresh(
+        prob_1d, threshold, fixed_border_thresh, fs,
+        gap_thresh_sec=gap_thresh_sec
+    )
 
-    # Ground truth events (across the entire recording)
+    # Ground truth events — expert annotations are never merged
     true_events = find_events_dual_thresh(
-        (mask_1d >= 0.4).astype(float), 0.5, 0.1, fs
+        (mask_1d >= 0.4).astype(float), 0.5, False, fs,
+        gap_thresh_sec=None
     )
 
     # Keep only events overlapping the N2 mask.
@@ -433,12 +439,12 @@ def find_optimal_threshold(model, subject_ids, processed_data_dir, data_params,
     Find F1-optimal threshold by caching probability series per subject and
     sweeping thresholds over the cached series. Inference runs once per subject.
     """
-    from core.dataset import get_inference_data
+
 
     if logger is None:
         logger = log
     if threshold_grid is None:
-        threshold_grid = np.arange(0.50, 0.91, 0.1)
+        threshold_grid = np.arange(0.40, 0.90, 0.05)
 
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     if torch.backends.mps.is_available():
@@ -450,6 +456,7 @@ def find_optimal_threshold(model, subject_ids, processed_data_dir, data_params,
     step_samples = int((data_params['window_sec'] - data_params['overlap_sec']) * fs)
     batch_size = TRAINING_PARAMS.get('batch_size', 16)
     fixed_border_thresh = POST_PROCESSING_PARAMS['fixed_border_thresh']
+    gap_thresh_sec = POST_PROCESSING_PARAMS['gap_thresh_sec']
     iou_threshold = INFERENCE_PARAMS['iou_threshold']
 
     model.to(device).eval()
@@ -488,9 +495,11 @@ def find_optimal_threshold(model, subject_ids, processed_data_dir, data_params,
         prob_1d = stitch_predictions_1d(all_probs, step_samples)
         mask_1d = stitch_predictions_1d(all_masks, step_samples)
 
-        # Ground truth events are threshold-independent — compute once
+        # Ground truth events are threshold-independent — compute once.
+        # Expert annotations are never merged.
         true_events = find_events_dual_thresh(
-            (mask_1d >= 0.4).astype(float), 0.5, 0.1, fs
+            (mask_1d >= 0.4).astype(float), 0.5, False, fs,
+            gap_thresh_sec=None
         )
         n_common = min(len(stage_mask_full), len(prob_1d))
         stage_mask = stage_mask_full[:n_common]
@@ -515,7 +524,8 @@ def find_optimal_threshold(model, subject_ids, processed_data_dir, data_params,
         tp_total, fp_total, fn_total = 0, 0, 0
         for c in cached:
             pred_events = find_events_dual_thresh(
-                c["prob_1d"], float(t), fixed_border_thresh, fs
+                c["prob_1d"], float(t), fixed_border_thresh, fs,
+                gap_thresh_sec=gap_thresh_sec
             )
             pred_events, _, _ = _events_overlap_mask(
                 pred_events, c["stage_mask"], c["stage_codes"]
