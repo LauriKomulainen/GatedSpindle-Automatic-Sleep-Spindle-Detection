@@ -22,7 +22,7 @@ INFERENCE_PARAMS = {
     'iou_threshold': 0.2,
     'fixed_threshold': None,    # None, thresholds in the range 0.5–0.9 (steps of 0.1), done during of validation.
     'inference_mode': 'best',   # Options: 'best', 'swa', 'ensemble'
-    'use_tta': False,            # Options: False, True
+    'use_tta': True,            # Options: False, True
 }
 
 POST_PROCESSING_PARAMS = {
