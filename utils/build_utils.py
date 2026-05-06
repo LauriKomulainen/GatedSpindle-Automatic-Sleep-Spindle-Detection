@@ -83,3 +83,58 @@ def create_stage_codes(
         end = min(start + samples_per_epoch, signal_length)
         codes[start:end] = stage
     return codes
+
+
+def count_spindles_per_stage(
+    spindle_mask: np.ndarray,
+    hypnogram: np.ndarray,
+    fs: float,
+    hypnogram_resolution_sec: float,
+) -> dict:
+    """Count spindle events per sleep stage.
+
+    A spindle event is assigned to the stage that contains the majority of its
+    samples. This way each event is counted exactly once even when it straddles
+    a stage boundary.
+
+    Returns a dict mapping stage label (str) -> spindle count (int).
+    Stage labels are taken directly from the hypnogram values, converted to str.
+    """
+    from scipy.ndimage import label
+
+    labeled, n_events = label(spindle_mask > 0)
+    if n_events == 0:
+        return {}
+
+    stage_codes = create_stage_codes(
+        hypnogram, len(spindle_mask), fs, hypnogram_resolution_sec
+    )
+
+    counts: dict = {}
+    for event_id in range(1, n_events + 1):
+        event_indices = np.where(labeled == event_id)[0]
+        if len(event_indices) == 0:
+            continue
+        # Majority stage of the event's samples.
+        event_stages = stage_codes[event_indices]
+        unique, freq = np.unique(event_stages, return_counts=True)
+        majority_stage = str(unique[freq.argmax()])
+        counts[majority_stage] = counts.get(majority_stage, 0) + 1
+
+    return counts
+
+
+def format_stage_counts(counts: dict, total: int) -> str:
+    """Format a per-stage spindle count dict as a compact human-readable string.
+
+    Example: 'N2=104 (77.6%), N3=28 (20.9%), N1=2 (1.5%)' — sorted by count
+    descending. Stage labels are passed through unchanged (caller decides on
+    naming; '2' stays '2', 'W' stays 'W').
+    """
+    if total == 0 or not counts:
+        return "(no spindles)"
+    parts = []
+    for stage, n in sorted(counts.items(), key=lambda kv: -kv[1]):
+        pct = 100.0 * n / total
+        parts.append(f"{stage}={n} ({pct:.1f}%)")
+    return ", ".join(parts)

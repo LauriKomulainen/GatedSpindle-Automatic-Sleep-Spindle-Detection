@@ -9,7 +9,8 @@ from scipy.ndimage import label
 import paths
 from utils.logger import setup_logging
 from utils.build_utils import (
-    prepare_directories, create_spindle_mask, create_stage_mask, create_stage_codes
+    prepare_directories, create_spindle_mask, create_stage_mask, create_stage_codes,
+    count_spindles_per_stage, format_stage_counts,
 )
 from signal_processing import bandpassfilter, normalization
 from utils.signal_visualization import save_model_input_examples, plot_eeg_trace
@@ -83,8 +84,17 @@ def segment_data(raw, hypnogram: np.ndarray, raw_unfiltered: np.ndarray = None) 
         n_lost = n_total - n_kept
         stages_str = "/".join(f"N{s}" if str(s).isdigit() else str(s) for s in INCLUDED_STAGES)
         log.info(f"  Spindle events: Raw Union: {n_total}. In {stages_str} stages: {n_kept}. Lost: {n_lost}")
+
+        # Per-stage breakdown of all annotated spindles. Lets us quantify
+        # how many spindles each candidate filter (N2 only, N2+N3, etc.)
+        # would retain or drop on this dataset.
+        per_stage = count_spindles_per_stage(
+            spindle_mask, hypnogram, fs, HYPNOGRAM_RESOLUTION_SEC
+        )
+        log.info(f"  Spindles by stage: {format_stage_counts(per_stage, n_total)}")
     else:
         n_kept = n_total
+        per_stage = {}
 
     use_hypno = hypnogram is not None
     x_windows, y_masks, raw_windows, window_times = [], [], [], []
@@ -163,6 +173,7 @@ def segment_data(raw, hypnogram: np.ndarray, raw_unfiltered: np.ndarray = None) 
         n_pos_windows,
         np.array(raw_windows) if raw_windows else np.array([]),
         np.array(window_times),
+        per_stage,
     )
 
 
@@ -255,7 +266,7 @@ def _process_patient(patient_file_group: dict, processed_dir: Path, plots_dir: P
     if hypnogram is None:
         log.warning(f"  No hypnogram for {patient_id}, skipping stage filtering")
 
-    x_windows, y_masks, n_total, n_kept, n_pos_windows, raw_windows, window_times = segment_data(
+    x_windows, y_masks, n_total, n_kept, n_pos_windows, raw_windows, window_times, per_stage = segment_data(
         raw, hypnogram,
         original_signal
     )
@@ -304,6 +315,7 @@ def _process_patient(patient_file_group: dict, processed_dir: Path, plots_dir: P
         "union": n_total,
         "kept": n_kept,
         "n_windows": len(x_windows),
+        "per_stage": per_stage,
     }
 
     # FULL data for inference (no stage filtering at window level;
@@ -360,6 +372,21 @@ def main():
             f"  Total spindles in valid stages: {total_spindles} | "
             f"Positive windows: {total_pos_windows}/{total_windows} ({pos_ratio:.1%})"
         )
+
+        # Aggregate per-stage spindle counts across all subjects.
+        # This shows where annotated spindles actually live in the dataset and
+        # quantifies how much would be lost if the stage filter were narrowed
+        # (e.g. switching from N2+N3 to N2 only).
+        agg_per_stage: dict = {}
+        for s in stats:
+            for stage, n in s.get("per_stage", {}).items():
+                agg_per_stage[stage] = agg_per_stage.get(stage, 0) + n
+        agg_total = sum(agg_per_stage.values())
+        if agg_total > 0:
+            log.info(
+                f"  Spindles by stage (all subjects, n={agg_total}): "
+                f"{format_stage_counts(agg_per_stage, agg_total)}"
+            )
 
     log.info(f"Complete. Time: {time.time() - start_time:.2f}s")
 

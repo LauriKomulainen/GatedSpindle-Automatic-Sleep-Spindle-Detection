@@ -10,7 +10,8 @@ from scipy.ndimage import label
 import paths
 from utils.logger import setup_logging
 from utils.build_utils import (
-    prepare_directories, create_spindle_mask, create_stage_mask, create_stage_codes
+    prepare_directories, create_spindle_mask, create_stage_mask, create_stage_codes,
+    count_spindles_per_stage, format_stage_counts,
 )
 from signal_processing import bandpassfilter, normalization
 from utils.signal_visualization import save_model_input_examples, plot_eeg_trace
@@ -85,6 +86,7 @@ def segment_data(raw, hypnogram: np.ndarray, raw_unfiltered: np.ndarray = None) 
     # Create spindle masks for each scorer mode
     spindle_masks = {}
     n_spindle_counts = {}
+    per_stage_counts = {}  # mode -> {stage_code: count}
 
     for mode, annots in scorer_modes.items():
         mask = create_spindle_mask(annots, signal_length, fs)
@@ -98,8 +100,14 @@ def segment_data(raw, hypnogram: np.ndarray, raw_unfiltered: np.ndarray = None) 
             )
             filtered_mask = mask * stage_mask
             _, n_kept = label(filtered_mask > 0)
+
+            # Per-stage breakdown for this scorer.
+            per_stage_counts[mode] = count_spindles_per_stage(
+                mask, hypnogram, fs, HYPNOGRAM_RESOLUTION_SEC
+            )
         else:
             n_kept = n_total
+            per_stage_counts[mode] = {}
 
         n_spindle_counts[mode] = (n_total, n_kept)
 
@@ -108,6 +116,11 @@ def segment_data(raw, hypnogram: np.ndarray, raw_unfiltered: np.ndarray = None) 
     for mode, (n_total, n_kept) in n_spindle_counts.items():
         n_lost = n_total - n_kept
         log.info(f"  [{mode}] Spindles: Total={n_total}, In {stages_str}={n_kept}, Lost={n_lost}")
+        if per_stage_counts.get(mode):
+            log.info(
+                f"  [{mode}] Spindles by stage: "
+                f"{format_stage_counts(per_stage_counts[mode], n_total)}"
+            )
 
     use_hypno = hypnogram is not None
     x_windows = []
@@ -170,6 +183,7 @@ def segment_data(raw, hypnogram: np.ndarray, raw_unfiltered: np.ndarray = None) 
         pos_window_counts,
         np.array(raw_windows) if raw_windows else np.array([]),
         np.array(window_times),
+        per_stage_counts,
     )
 
 
@@ -282,7 +296,7 @@ def _process_patient(patient_file_group: dict, processed_dir: Path, plots_dir: P
     if hypnogram is None:
         log.warning(f"  No hypnogram for {patient_id}, skipping stage filtering")
 
-    x_windows, y_masks_dict, n_spindle_counts, pos_window_counts, raw_windows, window_times = segment_data(
+    x_windows, y_masks_dict, n_spindle_counts, pos_window_counts, raw_windows, window_times, per_stage_counts = segment_data(
         raw, hypnogram, original_signal
     )
 
@@ -343,6 +357,7 @@ def _process_patient(patient_file_group: dict, processed_dir: Path, plots_dir: P
             "pos_windows": n_pos_windows,
             "total_windows": n_total_windows,
             "pos_ratio": round(pos_ratio, 3),
+            "per_stage": per_stage_counts.get(mode, {}),
         }
 
         log.info(
@@ -422,6 +437,20 @@ def main():
                 log.info(
                     f"  [{mode}] Total spindles in valid stages: {total_spindles} | "
                     f"Positive windows: {total_pos_windows}/{total_windows_all} ({pos_ratio:.1%})"
+                )
+
+            # Aggregate per-stage spindle counts across all subjects for this scorer.
+            # Quantifies how many spindles each candidate stage filter would
+            # retain or drop on the dataset (e.g. moving from N2+N3 to N2 only).
+            agg_per_stage: dict = {}
+            for s in stats:
+                for stage, n in s["scorers"].get(mode, {}).get("per_stage", {}).items():
+                    agg_per_stage[stage] = agg_per_stage.get(stage, 0) + n
+            agg_total = sum(agg_per_stage.values())
+            if agg_total > 0:
+                log.info(
+                    f"  [{mode}] Spindles by stage (all subjects, n={agg_total}): "
+                    f"{format_stage_counts(agg_per_stage, agg_total)}"
                 )
 
     log.info(f"Complete. Time: {time.time() - start_time:.2f}s")
