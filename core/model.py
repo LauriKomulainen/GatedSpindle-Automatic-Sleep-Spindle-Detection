@@ -94,14 +94,17 @@ class DecoderBlock(nn.Module):
 
 class ResidualUNet1D(nn.Module):
     """
-    1D Gated U-Net architecture for time-series segmentation.
+    1D Residual U-Net architecture for time-series segmentation.
 
     The model consists of:
     - An encoder–decoder structure composed of residual convolutional blocks
       (22 Conv1D layers in total, including projection shortcuts)
     - Symmetric skip connections between encoder and decoder stages
     - Instance normalization and ReLU non-linearities throughout the network
-    - A two-layer MLP gating head (256→64→1) operating on globally pooled bottleneck features
+
+    Optional: a two-layer MLP gating head (256→64→1) operating on globally
+    pooled bottleneck features can be enabled via use_gating_branch=True.
+    The thesis results were produced with use_gating_branch=False.
     """
     def __init__(self, features, dropout_rate=0.2, use_gating_branch=True):
         super(ResidualUNet1D, self).__init__()
