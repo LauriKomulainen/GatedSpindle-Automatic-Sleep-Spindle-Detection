@@ -40,7 +40,7 @@ from utils.run_utils import (
 )
 from core.dataset import get_dataloaders
 from core.train_model import train_model
-from core.model import GatedUNet
+from core.model import ResidualUNet1D
 from core.evaluation import (
     aggregate_and_save_summary,
     save_final_experiment_summary,
@@ -136,7 +136,7 @@ def train_master_model(train_ids: list, val_ids: list, output_dir: str,
         log.error(f"Data loading failed: {e}")
         return None
 
-    model = GatedUNet(num_channels, dropout_rate=MASS_TRAINING_PARAMS["dropout_rate"])
+    model = ResidualUNet1D(num_channels, dropout_rate=MASS_TRAINING_PARAMS["dropout_rate"])
     train_model(
         model,
         train_loader,
@@ -160,7 +160,7 @@ def evaluate_on_dreams(master_dir: str, dreams_subjects: list,
     """Evaluate the master model on DREAMS, one subject at a time."""
     try:
         from core.config_loader import INFERENCE_PARAMS
-        INFERENCE_PARAMS['threshold'] = 0.5
+        INFERENCE_PARAMS['fixed_threshold'] = 0.5
         log.info("Explicitly forced zero-shot threshold to 0.500 in config_loader")
     except Exception as e:
         log.warning(f"Could not force threshold: {e}")

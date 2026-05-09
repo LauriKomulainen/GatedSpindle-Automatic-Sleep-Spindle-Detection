@@ -9,7 +9,7 @@ TRAINING_PARAMS = {
     'early_stopping_patience': 10,
     'use_swa': False,               # Options: False, True
     'use_gating_branch': False,     # Options: False, True
-    'seg_loss_weight': 0.6,
+    'seg_loss_weight': 0.85,
     'kernel_size': 11,
     'lr_scheduler': 'plateau',      # Options: 'cosine', 'plateau'
 }

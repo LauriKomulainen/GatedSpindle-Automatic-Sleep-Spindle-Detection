@@ -11,6 +11,9 @@ import numpy as np
 import torch
 import paths
 from utils.logger import setup_logging
+from core.dataset import get_dataloaders
+from core.train_model import train_model
+from core.model import ResidualUNet1D
 from utils.run_utils import (
     set_seed,
     log_params,
@@ -20,15 +23,20 @@ from utils.run_utils import (
     get_cv_splits,
     get_cv_parameters,
 )
-from core.dataset import get_dataloaders
-from core.train_model import train_model
-from core.model import GatedUNet
 from core.evaluation import (
     aggregate_and_save_summary,
     save_final_experiment_summary,
 )
-from configs.mass_model_config import INFERENCE_PARAMS, TRAINING_PARAMS, POST_PROCESSING_PARAMS
-from configs.mass_config import DATA_PARAMS, CV_CONFIG, get_subjects_for_scorer
+from configs.mass_model_config import (
+    INFERENCE_PARAMS,
+    TRAINING_PARAMS,
+    POST_PROCESSING_PARAMS,
+)
+from configs.mass_config import (
+    DATA_PARAMS, CV_CONFIG,
+    get_subjects_for_scorer,
+    get_explicit_splits,
+)
 
 
 def filter_valid_subjects(subjects: list, data_dir: str, logger, scorer_mode: str) -> list:
@@ -88,7 +96,8 @@ def main():
              "'shuffled' (default): seeded random permutation per repeat, as in SEED. "
              "'sequential': subjects assigned to folds in their listed order, "
              "producing fixed contiguous test sets (e.g. fold 1 = subjects 1-4, "
-             "fold 2 = subjects 5-8, ...). Same across repeats.",
+             "fold 2 = subjects 5-8, ...). Same across repeats. "
+             "Both options are ignored when CV_CONFIG['use_explicit_splits'] is True.",
     )
     args = parser.parse_args()
 
@@ -121,6 +130,11 @@ def main():
     cv_strategy = CV_CONFIG["cv_strategy"]
     n_folds_cfg = CV_CONFIG.get("n_folds")
     use_swa = TRAINING_PARAMS.get("use_swa")
+    use_explicit = CV_CONFIG.get("use_explicit_splits", False)
+
+    if use_explicit:
+        log.info(f"Using explicit splits from mass_config.MASS_SS2_5FOLD_SPLITS "
+                 f"(scorer={scorer_mode}). Seed-based subject shuffling is bypassed.")
 
     # Determine eligible subjects from scorer_mode, then filter by what's on disk
     scorer_subjects = get_subjects_for_scorer(scorer_mode)
@@ -136,7 +150,8 @@ def main():
 
     log.info(f"Cross validation strategy: {strategy_name}")
     log.info(f"Scorer mode: {scorer_mode}")
-    log.info(f"Fold split mode: {args.fold_split}")
+    if not use_explicit:
+        log.info(f"Fold split mode: {args.fold_split}")
 
     folds_to_run = CV_CONFIG.get("folds_to_run") or range(num_folds)
     grand_results = defaultdict(list)
@@ -153,24 +168,48 @@ def main():
         elif not os.path.exists(repeat_dir):
             continue
 
-        # Determine subject order for fold assignment
-        fold_subjects = subjects.copy()
-        if args.fold_split == "shuffled":
-            # SEED-style: seeded random permutation, differs per repeat
-            rng = random.Random(current_seed)
-            rng.shuffle(fold_subjects)
-            log.info(f"Subjects shuffled for repeat (seed={current_seed}).")
+        # Determine fold specifications for this repeat
+        explicit_folds = None
+        fold_subjects = None
+
+        if use_explicit:
+            try:
+                explicit_folds = get_explicit_splits(scorer_mode, repeat_idx)
+            except ValueError as e:
+                log.error(f"Explicit splits validation failed for "
+                          f"scorer={scorer_mode}, Repeat_{repeat_idx + 1}: {e}")
+                continue
+            log.info(f"Loaded {len(explicit_folds)} explicit folds for "
+                     f"scorer={scorer_mode}, Repeat_{repeat_idx + 1}")
+            iter_folds = list(range(len(explicit_folds)))
         else:
-            # Sequential: subjects kept in their original listed order.
-            # Folds become fixed contiguous blocks, identical across repeats.
-            log.info(f"Subjects kept in listed order (sequential fold assignment).")
+            # Determine subject order for fold assignment
+            fold_subjects = subjects.copy()
+            if args.fold_split == "shuffled":
+                # SEED-style: seeded random permutation, differs per repeat
+                rng = random.Random(current_seed)
+                rng.shuffle(fold_subjects)
+                log.info(f"Subjects shuffled for repeat (seed={current_seed}).")
+            else:
+                # Sequential: subjects kept in their original listed order.
+                # Folds become fixed contiguous blocks, identical across repeats.
+                log.info(f"Subjects kept in listed order (sequential fold assignment).")
+            iter_folds = folds_to_run
 
         repeat_metrics = defaultdict(list)
 
-        for fold_idx in folds_to_run:
-            train_ids, val_ids, test_ids, fold_name, identifier = get_cv_splits(
-                cv_strategy, fold_subjects, fold_idx, num_folds
-            )
+        for fold_idx in iter_folds:
+            if use_explicit:
+                spec = explicit_folds[fold_idx]
+                train_ids = list(spec['train'])
+                val_ids = list(spec['val'])
+                test_ids = list(spec['test'])
+                fold_name = spec['fold_name']
+                identifier = test_ids[0] if len(test_ids) == 1 else fold_name
+            else:
+                train_ids, val_ids, test_ids, fold_name, identifier = get_cv_splits(
+                    cv_strategy, fold_subjects, fold_idx, num_folds
+                )
 
             log.info(f"{fold_name}")
             log.info(f"Train ({len(train_ids)}): {train_ids}")
@@ -203,7 +242,7 @@ def main():
                 continue
 
             if args.mode == "train":
-                model = GatedUNet(num_channels, dropout_rate=TRAINING_PARAMS["dropout_rate"])
+                model = ResidualUNet1D(num_channels, dropout_rate=TRAINING_PARAMS["dropout_rate"])
                 train_model(
                     model,
                     train_loader,

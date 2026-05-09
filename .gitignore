@@ -6,6 +6,7 @@ plots
 repository
 gradu_plots
 utils/chart.html
+extract_splits
 
 #Byte-compiled / optimized / DLL files
 __pycache__/

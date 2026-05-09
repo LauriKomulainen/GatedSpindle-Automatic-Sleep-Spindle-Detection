@@ -92,7 +92,7 @@ class DecoderBlock(nn.Module):
         return self.conv(x)
 
 
-class GatedUNet(nn.Module):
+class ResidualUNet1D(nn.Module):
     """
     1D Gated U-Net architecture for time-series segmentation.
 
@@ -104,7 +104,7 @@ class GatedUNet(nn.Module):
     - A two-layer MLP gating head (256→64→1) operating on globally pooled bottleneck features
     """
     def __init__(self, features, dropout_rate=0.2, use_gating_branch=True):
-        super(GatedUNet, self).__init__()
+        super(ResidualUNet1D, self).__init__()
         self.use_gating_branch = use_gating_branch
 
         # Input normalization

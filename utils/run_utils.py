@@ -15,7 +15,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 import paths
-from core.model import GatedUNet
+from core.model import ResidualUNet1D
 from core.evaluation import compute_event_based_metrics, find_optimal_threshold
 from core.config_loader import INFERENCE_PARAMS
 
@@ -189,7 +189,7 @@ def evaluate_fold(fold_dir, test_subject_ids, val_subject_ids, processed_data_di
     if threshold is None:
         # Optimize threshold on validation subjects using full event-based pipeline.
         # Inference runs once per subject; thresholds are swept over cached probs.
-        model_for_thr = GatedUNet(num_channels, dropout_rate=0.0).to(device)
+        model_for_thr = ResidualUNet1D(num_channels, dropout_rate=0.0).to(device)
         model_for_thr.load_state_dict(torch.load(best_path, map_location=device))
         threshold = find_optimal_threshold(
             model_for_thr,
@@ -203,7 +203,7 @@ def evaluate_fold(fold_dir, test_subject_ids, val_subject_ids, processed_data_di
         gc.collect()
 
     # Always load BEST (needed for "best" and "ensemble" modes)
-    model_best = GatedUNet(num_channels, dropout_rate=0.0).to(device)
+    model_best = ResidualUNet1D(num_channels, dropout_rate=0.0).to(device)
     model_best.load_state_dict(torch.load(best_path, map_location=device))
     logger.info(f"Loaded model from {best_path}")
     logger.info(f"Using threshold: {threshold:.3f}")
@@ -223,7 +223,7 @@ def evaluate_fold(fold_dir, test_subject_ids, val_subject_ids, processed_data_di
             logger.error(f"SWA mode requested but {swa_path} not found")
             del model_best
             return None
-        model_swa = GatedUNet(num_channels, dropout_rate=0.0).to(device)
+        model_swa = ResidualUNet1D(num_channels, dropout_rate=0.0).to(device)
         model_swa.load_state_dict(torch.load(swa_path, map_location=device))
         final_metrics = compute_event_based_metrics(
             model_swa, test_subject_ids, processed_data_dir, threshold,
@@ -238,7 +238,7 @@ def evaluate_fold(fold_dir, test_subject_ids, val_subject_ids, processed_data_di
             logger.error(f"Ensemble mode requested but {swa_path} not found")
             del model_best
             return None
-        model_swa = GatedUNet(num_channels, dropout_rate=0.0).to(device)
+        model_swa = ResidualUNet1D(num_channels, dropout_rate=0.0).to(device)
         model_swa.load_state_dict(torch.load(swa_path, map_location=device))
         ensemble = EnsembleWrapper(model_best, model_swa).to(device)
         final_metrics = compute_event_based_metrics(

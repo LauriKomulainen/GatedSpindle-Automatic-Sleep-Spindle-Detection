@@ -20,13 +20,13 @@ from utils.run_utils import (
 )
 from core.dataset import get_dataloaders
 from core.train_model import train_model
-from core.model import GatedUNet
+from core.model import ResidualUNet1D
 from core.evaluation import (
     aggregate_and_save_summary,
     save_final_experiment_summary,
 )
 from configs.dreams_model_config import INFERENCE_PARAMS, TRAINING_PARAMS, POST_PROCESSING_PARAMS
-from configs.dreams_config import DATA_PARAMS, CV_CONFIG
+from configs.dreams_config import DATA_PARAMS, CV_CONFIG, get_explicit_splits
 
 
 def filter_valid_subjects(subjects: list, data_dir: str, logger) -> list:
@@ -49,7 +49,9 @@ def main():
     parser.add_argument("--run_dir", type=str, default=None)
     parser.add_argument("--seed", type=int, default=1, nargs="?", const=None)
     parser.add_argument("--repeats", type=int, default=1)
-    parser.add_argument("--shuffle_folds", action="store_true")
+    parser.add_argument("--shuffle_folds", action="store_true",
+                        help="Shuffle the subject order before fold assignment. "
+                             "Ignored when CV_CONFIG['use_explicit_splits'] is True.")
     args = parser.parse_args()
 
     base_seed = args.seed if args.seed is not None else random.randint(1, 99999)
@@ -75,16 +77,30 @@ def main():
     log_params(log, "Inference params", INFERENCE_PARAMS)
     log_params(log, "Post-processing params", POST_PROCESSING_PARAMS)
 
+    use_explicit = CV_CONFIG.get("use_explicit_splits", False)
+    use_swa = TRAINING_PARAMS.get("use_swa", False)
+    cv_strategy = "LOSO"
+
     # Filter valid subjects
     all_subjects = filter_valid_subjects(list(DATA_PARAMS["subjects_list"]), paths.PROCESSED_DATA_DIR, log)
     if not all_subjects:
         log.error("No valid subjects found! Check the processed_data directory.")
         return
 
-    # DREAMS uses LOSO cross-validation
-    use_swa = TRAINING_PARAMS.get("use_swa", False)
-    num_folds = len(all_subjects)
-    cv_strategy = "LOSO"
+    # Load and validate explicit splits once if enabled. DREAMS LOSO splits are
+    # deterministic and identical across repeats, so a single load is sufficient.
+    explicit_folds = None
+    if use_explicit:
+        log.info("Using explicit DREAMS LOSO splits from "
+                 "dreams_config.DREAMS_LOSO_SPLITS. Seed-based shuffling is bypassed.")
+        try:
+            explicit_folds = get_explicit_splits()
+        except ValueError as e:
+            log.error(f"Explicit splits validation failed: {e}")
+            return
+        num_folds = len(explicit_folds)
+    else:
+        num_folds = len(all_subjects)
 
     log.info(f"Cross validation strategy: {cv_strategy} ({num_folds} folds)")
     folds_to_run = CV_CONFIG.get("folds_to_run") or range(num_folds)
@@ -103,14 +119,22 @@ def main():
             continue
 
         subjects = all_subjects.copy()
-        if args.shuffle_folds:
+        if not use_explicit and args.shuffle_folds:
             random.shuffle(subjects)
             log.info("Subjects shuffled.")
 
         repeat_metrics = defaultdict(list)
 
         for fold_idx in folds_to_run:
-            train_ids, val_ids, test_ids, fold_name, identifier = get_loso_splits(subjects, fold_idx)
+            if use_explicit:
+                spec = explicit_folds[fold_idx]
+                train_ids = list(spec['train'])
+                val_ids = list(spec['val'])
+                test_ids = list(spec['test'])
+                fold_name = spec['fold_name']
+                identifier = test_ids[0] if len(test_ids) == 1 else fold_name
+            else:
+                train_ids, val_ids, test_ids, fold_name, identifier = get_loso_splits(subjects, fold_idx)
 
             log.info(f"{fold_name}")
             log.info(f"Train ({len(train_ids)}): {train_ids}")
@@ -143,7 +167,7 @@ def main():
                 continue
 
             if args.mode == "train":
-                model = GatedUNet(num_channels, dropout_rate=TRAINING_PARAMS["dropout_rate"])
+                model = ResidualUNet1D(num_channels, dropout_rate=TRAINING_PARAMS["dropout_rate"])
                 train_model(
                     model,
                     train_loader,

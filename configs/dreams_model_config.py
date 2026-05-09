@@ -10,9 +10,9 @@ TRAINING_PARAMS = {
     'early_stopping_patience': 20,
     'use_swa': False,               # Options: False, True
     'use_gating_branch': False,     # Options: False, True
-    'seg_loss_weight': 0.6,
+    'seg_loss_weight': 0.85,
     'kernel_size': 11,
-    'lr_scheduler': 'cosine',       # Options: 'cosine', 'plateau'
+    'lr_scheduler': 'plateau',       # Options: 'cosine', 'plateau'
 }
 
 TRAINING_PARAMS['padding'] = (TRAINING_PARAMS['kernel_size'] - 1) // 2
