@@ -47,7 +47,7 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--mode", type=str, default="train", choices=["train", "evaluate"])
     parser.add_argument("--run_dir", type=str, default=None)
-    parser.add_argument("--seed", type=int, default=1, nargs="?", const=None)
+    parser.add_argument("--seed", type=int, default=0, nargs="?", const=None)
     parser.add_argument("--repeats", type=int, default=1)
     parser.add_argument("--shuffle_folds", action="store_true",
                         help="Shuffle the subject order before fold assignment. "
