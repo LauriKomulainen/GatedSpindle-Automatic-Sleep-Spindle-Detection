@@ -23,6 +23,13 @@ def aggregate_and_save_summary(repeat_metrics: Dict[str, list],
     """
     Calculates mean/std across folds for a repeat and saves to JSON.
     Logs only relative metrics (F1, Precision, Recall, IoU), hides raw counts (TP/FP/FN).
+
+    Returns:
+        Tuple of (grand_results_update, raw_per_fold_values):
+        - grand_results_update: dict {metric: mean_for_this_repeat}
+        - raw_per_fold_values: dict {metric: [val_fold_1, val_fold_2, ...]}
+          The raw per-fold values are needed by save_final_experiment_summary
+          to compute combined cross-validation statistics.
     """
     summary_stats = {
         "repeat_index": repeat_idx + 1,
@@ -69,17 +76,36 @@ def aggregate_and_save_summary(repeat_metrics: Dict[str, list],
     else:
         logger.warning("No metrics collected for this repeat.")
 
-    return grand_results_update
+    return grand_results_update, repeat_metrics
 
 
 def save_final_experiment_summary(grand_results: Dict[str, list],
                                   output_dir: str,
                                   total_repeats: int,
                                   timestamp: str,
-                                  logger=None):
+                                  logger=None,
+                                  grand_raw: Dict[str, list] = None):
     """
     Calculates final mean/std across all repeats, logs the results table,
     and saves the final experiment summary JSON.
+
+    Reports two complementary views of variance:
+
+    1. Seed-to-seed statistics:
+       Mean and std computed across the per-repeat aggregated means.
+       Captures variation between independent training runs (random seeds).
+
+    2. Combined cross-validation statistics:
+       Mean and std computed across all individual fold-by-fold values
+       from all repeats (e.g. 15 values for 3 × 5-fold or 18 for 3 × 6-fold LOSO).
+       This is the form most directly comparable to baseline papers that report
+       a single combined std across their full cross-validation protocol
+
+    Args:
+        grand_results: dict {metric: [per_repeat_mean_1, per_repeat_mean_2, ...]}
+        grand_raw: dict {metric: [val_fold_1_repeat_1, val_fold_2_repeat_1, ...,
+                                   val_fold_n_repeat_m]} — all individual values.
+                   If None, only seed-to-seed statistics are reported.
     """
     if logger is None:
         logger = log
@@ -94,6 +120,7 @@ def save_final_experiment_summary(grand_results: Dict[str, list],
 
     metrics_to_hide_from_log = ["TP (events)", "FP (events)", "FN (events)"]
 
+    # Seed-to-seed statistics (across per-repeat means)
     if len(grand_results) > 0:
         logger.info(f"{'Metric':<15} {'Mean':<10} {'Std Dev':<10}")
 
@@ -106,20 +133,39 @@ def save_final_experiment_summary(grand_results: Dict[str, list],
 
             final_summary_data["metrics"][key] = {
                 "mean": float(mean_val),
-                "std": float(std_val)
+                "seed_to_seed_std": float(std_val)
             }
-
-        try:
-            final_json_path = os.path.join(output_dir, "final_experiment_summary.json")
-            with open(final_json_path, 'w') as f:
-                json.dump(final_summary_data, f, indent=4)
-
-            logger.info(f"Saved final experiment summary to: {final_json_path}")
-
-        except Exception as e:
-            logger.error(f"Failed to save final summary JSON: {e}")
     else:
         logger.warning("No grand results collected.")
+
+    # Combined cross-validation statistics (across all individual partitions)
+    if grand_raw is not None and len(grand_raw) > 0:
+        # Determine the number of partitions from any one metric
+        n_partitions = len(next(iter(grand_raw.values())))
+        logger.info(f"Combined statistics across all {n_partitions} cross-validation partitions:")
+        logger.info(f"{'Metric':<15} {'Mean':<10} {'Combined Std':<14}")
+
+        for key, all_values in grand_raw.items():
+            mean_val = np.mean(all_values)
+            combined_std = np.std(all_values, ddof=1)
+
+            if key not in metrics_to_hide_from_log:
+                logger.info(f"{key:<15} {mean_val:.3f} (± {combined_std:.3f})")
+
+            # Add combined std to the summary metric entry, if it exists
+            if key in final_summary_data["metrics"]:
+                final_summary_data["metrics"][key]["combined_std"] = float(combined_std)
+                final_summary_data["metrics"][key]["n_partitions"] = int(n_partitions)
+
+    try:
+        final_json_path = os.path.join(output_dir, "final_experiment_summary.json")
+        with open(final_json_path, 'w') as f:
+            json.dump(final_summary_data, f, indent=4)
+
+        logger.info(f"Saved final experiment summary to: {final_json_path}")
+
+    except Exception as e:
+        logger.error(f"Failed to save final summary JSON: {e}")
 
 
 def _event_majority_stage(start: int, end: int, stage_codes: np.ndarray) -> str:

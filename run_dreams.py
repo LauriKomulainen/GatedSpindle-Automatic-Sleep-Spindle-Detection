@@ -105,6 +105,7 @@ def main():
     log.info(f"Cross validation strategy: {cv_strategy} ({num_folds} folds)")
     folds_to_run = CV_CONFIG.get("folds_to_run") or range(num_folds)
     grand_results = defaultdict(list)
+    grand_raw = defaultdict(list)
 
     # Main training/evaluation loop
     for repeat_idx in repeats:
@@ -199,12 +200,18 @@ def main():
             except Exception as e:
                 log.error(f"Evaluation failed: {e}")
 
-        summary = aggregate_and_save_summary(repeat_metrics, repeat_dir, repeat_idx, current_seed, log)
+        summary, raw_per_fold = aggregate_and_save_summary(
+            repeat_metrics, repeat_dir, repeat_idx, current_seed, log
+        )
         for key, val in summary.items():
             grand_results[key].append(val)
+        for key, vals in raw_per_fold.items():
+            grand_raw[key].extend(vals)
 
     save_final_experiment_summary(
-        grand_results, master_dir, len(repeats), timestamp if args.mode == "train" else "eval", log
+        grand_results, master_dir, len(repeats),
+        timestamp if args.mode == "train" else "eval", log,
+        grand_raw=grand_raw
     )
 
     logging.shutdown()
