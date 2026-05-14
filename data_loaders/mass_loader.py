@@ -153,21 +153,12 @@ def _load_spindle_annotations_single(
 
 
 # Merge spindle annotations from two experts into a single set (UNION mode).
-# Overlapping or nearly-touching spindles (within 0.3s gap) are merged together.
-def _merge_annotations_union(marks_e1: np.ndarray, marks_e2: np.ndarray) -> np.ndarray:
-    if len(marks_e1) == 0 and len(marks_e2) == 0:
-        return np.empty((0, 2), dtype=int)
-    if len(marks_e1) == 0:
-        return marks_e2
-    if len(marks_e2) == 0:
-        return marks_e1
-
+def _merge_annotations_union(marks_e1, marks_e2):
+    if len(marks_e1) == 0: return marks_e2
+    if len(marks_e2) == 0: return marks_e1
     combined = np.vstack([marks_e1, marks_e2])
     combined = combined[combined[:, 0].argsort()]
-
-    merge_gap_sec = 0.3
-    gap_samples = int(merge_gap_sec * TARGET_FS)
-    return _merge_overlapping_intervals(combined, gap_samples=gap_samples)
+    return _merge_overlapping_intervals(combined, gap_samples=0)
 
 
 # Merge overlapping or nearly-touching intervals into non-overlapping segments.

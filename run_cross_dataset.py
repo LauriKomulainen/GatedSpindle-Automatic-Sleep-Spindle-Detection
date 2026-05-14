@@ -219,8 +219,8 @@ def main():
         help="Base random seed (default: 0). Repeat r uses seed = base + r."
     )
     parser.add_argument(
-        "--repeats", type=int, default=1,
-        help="Number of training repeats with different seeds"
+        "--repeats", type=int, default=3,
+        help="Number of training repeats with different seeds (folds)"
     )
     args = parser.parse_args()
 
@@ -277,6 +277,7 @@ def main():
             return
 
     grand_results = defaultdict(list)
+    grand_raw = defaultdict(list)
     repeat_tasks = []
 
     if args.mode in "train":
@@ -385,12 +386,14 @@ def main():
                     eval_dir, target_subjects, num_channels, log,
                 )
 
-                summary = aggregate_and_save_summary(
-                    repeat_metrics, eval_dir, repeat_idx, current_seed, log,
+                summary, raw_per_fold = aggregate_and_save_summary(
+                    repeat_metrics, repeat_dir, repeat_idx, current_seed, log
                 )
 
                 for key, val in summary.items():
                     grand_results[key].append(val)
+                for key, vals in raw_per_fold.items():
+                    grand_raw[key].extend(vals)
 
     if grand_results:
         num_evaluations = len(next(iter(grand_results.values())))
@@ -401,6 +404,7 @@ def main():
             num_evaluations,
             timestamp if args.mode in ("full", "train") else "eval",
             log,
+            grand_raw=grand_raw
         )
 
     log.info(f"Results saved to: {master_dir}")

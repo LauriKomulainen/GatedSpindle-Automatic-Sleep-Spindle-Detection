@@ -14,9 +14,7 @@ from utils.build_utils import (
     count_spindles_per_stage, format_stage_counts,
 )
 from signal_processing import bandpassfilter, normalization
-from utils.signal_visualization import save_model_input_examples, plot_eeg_trace
 from configs.mass_config import DATA_PARAMS
-from configs.mass_model_config import SIGNAL_VISUALIZATION_PARAMS
 from data_loaders import mass_loader
 
 setup_logging("build_mass_dataset.log")
@@ -38,7 +36,7 @@ SCORER_MODES = ['E1', 'E2', 'UNION']
 
 
 def get_scorer_annotations(patient_file_group: dict, sfreq: float) -> tuple:
-    """Extract sleep spindle annotations from expert scorers for visualization."""
+    """Extract sleep spindle annotations from expert scorers (used for subject_stats.json)."""
     scorer1_events, scorer2_events = [], []
 
     try:
@@ -58,7 +56,7 @@ def get_scorer_annotations(patient_file_group: dict, sfreq: float) -> tuple:
     return scorer1_events, scorer2_events
 
 
-def segment_data(raw, hypnogram: np.ndarray, raw_unfiltered: np.ndarray = None) -> tuple:
+def segment_data(raw, hypnogram: np.ndarray) -> tuple:
     """
     Segment continuous signal into overlapping windows with stage filtering.
     Uses midpoint rule: window is kept if its center point falls within valid sleep stages.
@@ -66,7 +64,7 @@ def segment_data(raw, hypnogram: np.ndarray, raw_unfiltered: np.ndarray = None) 
     Returns masks for all available scorer modes (E1, E2, UNION).
 
     Returns:
-        tuple: (x_windows, y_masks_dict, n_spindle_counts, raw_windows, window_times)
+        tuple: (x_windows, y_masks_dict, n_spindle_counts, pos_window_counts, per_stage_counts)
             - y_masks_dict: dict mapping scorer_mode -> np.ndarray of masks
             - n_spindle_counts: dict mapping scorer_mode -> (n_total, n_kept)
     """
@@ -125,7 +123,6 @@ def segment_data(raw, hypnogram: np.ndarray, raw_unfiltered: np.ndarray = None) 
     use_hypno = hypnogram is not None
     x_windows = []
     y_masks_per_mode = {mode: [] for mode in spindle_masks}
-    raw_windows, window_times = [], []
 
     # Sliding window extraction with midpoint rule
     for start in range(0, signal_length - window_samples, step_samples):
@@ -148,14 +145,10 @@ def segment_data(raw, hypnogram: np.ndarray, raw_unfiltered: np.ndarray = None) 
             window = normalization.normalize_data(window)
 
         x_windows.append(window)
-        window_times.append(start / fs)
 
         # Extract spindle mask windows for each scorer mode
         for mode, mask in spindle_masks.items():
             y_masks_per_mode[mode].append(mask[start:end])
-
-        if raw_unfiltered is not None:
-            raw_windows.append(raw_unfiltered[start:end])
 
     if use_hypno:
         log.info(f"  Windows segmentation: Total={len(x_windows)} (midpoint rule)")
@@ -176,15 +169,7 @@ def segment_data(raw, hypnogram: np.ndarray, raw_unfiltered: np.ndarray = None) 
         else:
             pos_window_counts[mode] = 0
 
-    return (
-        x_windows,
-        y_masks_dict,
-        n_spindle_counts,
-        pos_window_counts,
-        np.array(raw_windows) if raw_windows else np.array([]),
-        np.array(window_times),
-        per_stage_counts,
-    )
+    return x_windows, y_masks_dict, n_spindle_counts, pos_window_counts, per_stage_counts
 
 
 def segment_data_full(raw, hypnogram: np.ndarray) -> tuple:
@@ -195,7 +180,7 @@ def segment_data_full(raw, hypnogram: np.ndarray) -> tuple:
     events are filtered by the stage_mask afterwards.
 
     Returns:
-        tuple: (x_windows_full, y_masks_full_dict, stage_mask_full)
+        tuple: (x_windows_full, y_masks_full_dict, stage_mask_full, stage_codes_full)
             - x_windows_full: shape (n_windows, window_samples)
             - y_masks_full_dict: dict scorer_mode -> shape (n_windows, window_samples)
             - stage_mask_full: per-sample N2 mask, shape (signal_length,)
@@ -259,7 +244,7 @@ def segment_data_full(raw, hypnogram: np.ndarray) -> tuple:
     return x_windows_full, y_masks_full_dict, stage_mask_full, stage_codes_full
 
 
-def _process_patient(patient_file_group: dict, processed_dir: Path, plots_dir: Path) -> dict | None:
+def _process_patient(patient_file_group: dict, processed_dir: Path) -> dict | None:
     """Process a single patient's data."""
     patient_id = patient_file_group["id"]
     log.info(f"Processing patient: {patient_id}")
@@ -272,18 +257,11 @@ def _process_patient(patient_file_group: dict, processed_dir: Path, plots_dir: P
 
     fs = raw.info["sfreq"]
     scorer1_events, scorer2_events = get_scorer_annotations(patient_file_group, fs)
-    original_signal = raw.get_data()[0].copy()
 
     # Apply bandpass filter
     filtered = bandpassfilter.apply_bandpass_filter(
         raw.get_data()[0], fs, LOWCUT, HIGHCUT, FILTER_ORDER
     )
-
-    # Generate EEG trace plot
-    try:
-        plot_eeg_trace(filtered, fs, scorer1_events, scorer2_events, patient_id, plots_dir)
-    except Exception as e:
-        log.warning(f"  EEG trace plotting failed: {e}")
 
     # Apply normalization if needed
     if not USE_INSTANCE_NORM:
@@ -296,8 +274,8 @@ def _process_patient(patient_file_group: dict, processed_dir: Path, plots_dir: P
     if hypnogram is None:
         log.warning(f"  No hypnogram for {patient_id}, skipping stage filtering")
 
-    x_windows, y_masks_dict, n_spindle_counts, pos_window_counts, raw_windows, window_times, per_stage_counts = segment_data(
-        raw, hypnogram, original_signal
+    x_windows, y_masks_dict, n_spindle_counts, pos_window_counts, per_stage_counts = segment_data(
+        raw, hypnogram
     )
 
     if len(x_windows) == 0:
@@ -305,26 +283,6 @@ def _process_patient(patient_file_group: dict, processed_dir: Path, plots_dir: P
         return None
 
     log.info(f"Final shapes: X={x_windows.shape}")
-
-    n_viz_examples = SIGNAL_VISUALIZATION_PARAMS.get('input_examples', None)
-
-    # Save visualization examples (using UNION masks for visualization)
-    if n_viz_examples is not None and n_viz_examples > 0:
-        viz_masks = y_masks_dict.get('UNION')
-        if viz_masks is not None:
-            try:
-                save_model_input_examples(
-                    x_data=x_windows,
-                    y_data=viz_masks,
-                    raw_windows=raw_windows,
-                    subject_id=patient_id,
-                    save_dir=plots_dir,
-                    fs=fs,
-                    n_examples=n_viz_examples,
-                    channel_names=SIGNAL_VISUALIZATION_PARAMS["channel_names"],
-                )
-            except Exception as e:
-                log.warning(f"Could not save input examples: {e}")
 
     # Save X data (shared across all scorer modes)
     np.save(processed_dir / f"{patient_id}_X_1D.npy", x_windows)
@@ -396,7 +354,7 @@ def main():
     log.info("No need to re-run when switching scorer modes.")
 
     start_time = time.time()
-    processed_dir, plots_dir = prepare_directories()
+    processed_dir, _ = prepare_directories()
 
     patient_list = mass_loader.find_mass_data_files(paths.RAW_MASS_DATA_DIR)
     if not patient_list:
@@ -405,7 +363,7 @@ def main():
 
     log.info(f"Found {len(patient_list)} patients")
 
-    stats = [s for p in patient_list if (s := _process_patient(p, processed_dir, plots_dir))]
+    stats = [s for p in patient_list if (s := _process_patient(p, processed_dir))]
 
     if stats:
         output = {
@@ -441,7 +399,6 @@ def main():
 
             # Aggregate per-stage spindle counts across all subjects for this scorer.
             # Quantifies how many spindles each candidate stage filter would
-            # retain or drop on the dataset (e.g. moving from N2+N3 to N2 only).
             agg_per_stage: dict = {}
             for s in stats:
                 for stage, n in s["scorers"].get(mode, {}).get("per_stage", {}).items():
@@ -454,6 +411,7 @@ def main():
                 )
 
     log.info(f"Complete. Time: {time.time() - start_time:.2f}s")
+    log.info("To generate visualization plots, run: python -m utils.signal_visualization --dataset mass")
 
 
 if __name__ == "__main__":

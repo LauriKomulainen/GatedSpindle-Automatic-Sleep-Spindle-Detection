@@ -3,24 +3,38 @@
 """
 Visualization utilities for sleep spindle detection pipeline.
 
+This module can be used in two ways:
+    1) As a library: import save_model_input_examples and plot_eeg_trace.
+    2) As a standalone script: run after the dataset has been built.
+
+Standalone usage:
+    python -m utils.signal_visualization --dataset dreams
+    python -m utils.signal_visualization --dataset mass
+
+The standalone mode:
+    - Reads subject_stats.json from PROCESSED_DATA_DIR (raises if missing)
+    - Re-loads raw data via the dataset loader for each subject listed there
+    - Applies bandpass filtering, segments the signal, and generates plots
+    - Saves plots under PROCESSED_DATA_DIR/plots/
+
 Generates:
-- Model input example plots (multi-channel view with spindle annotations)
-- EEG trace plots with expert scorer annotations
+    - Model input example plots (multi-channel view with spindle annotations)
+    - EEG trace plots with expert scorer annotations
 """
 
 from pathlib import Path
-import numpy as np
+import argparse
+import json
 import logging
+import sys
+from paths import PLOTS_DIR
+import numpy as np
 import matplotlib.pyplot as plt
 from scipy.ndimage import label, find_objects
+
 from core.features import compute_input_channels
-from core.config_loader import SIGNAL_VISUALIZATION_PARAMS
 
 log = logging.getLogger(__name__)
-
-CHANNEL_NAMES = SIGNAL_VISUALIZATION_PARAMS.get(
-    'channel_names', ['EEG', 'Sigma', 'Hilbert Envelope']
-)
 
 # Consistent color scheme
 COLORS_CHANNELS = ['#2c3e50', '#2980b9', '#8e44ad']
@@ -64,7 +78,7 @@ def save_model_input_examples(x_data, y_data, raw_windows, subject_id, save_dir,
         return
 
     if channel_names is None:
-        channel_names = CHANNEL_NAMES
+        channel_names = ['EEG', 'Sigma', 'Hilbert Envelope']
 
     subject_dir = Path(save_dir) / "Model_input_examples" / subject_id
     subject_dir.mkdir(parents=True, exist_ok=True)
@@ -226,3 +240,311 @@ def _plot_union_shading(s1_evs, s2_evs, start_time, end_time, t_axis, sfreq):
         plt.axvspan(u_start, u_end, color='#9370DB', alpha=0.2, zorder=0,
                     label='Union' if not label_added else "")
         label_added = True
+
+
+# =============================================================================
+# STANDALONE SCRIPT MODE
+# =============================================================================
+# When run via `python -m utils.signal_visualization`, the module reads
+# subject_stats.json from PROCESSED_DATA_DIR and generates plots for each
+# subject listed there. This decouples plot generation from dataset building.
+
+
+def _segment_raw_for_visualization(
+    filtered_signal: np.ndarray,
+    raw_unfiltered: np.ndarray,
+    hypnogram: np.ndarray,
+    window_sec: float,
+    overlap_sec: float,
+    included_stages: list,
+    hypnogram_resolution_sec: float,
+    fs: float,
+):
+    """
+    Re-segment the signal to produce raw_windows for visualization.
+
+    This mirrors the midpoint-rule segmentation used by build_*_dataset.py
+    but only returns the raw (unfiltered) windows. The filtered windows
+    and masks are loaded from disk in the caller.
+
+    Returns:
+        np.ndarray of raw window slices, shape (n_windows, window_samples)
+    """
+    signal_length = len(filtered_signal)
+    window_samples = int(window_sec * fs)
+    step_samples = int((window_sec - overlap_sec) * fs)
+
+    use_hypno = hypnogram is not None
+    raw_windows = []
+
+    for start in range(0, signal_length - window_samples, step_samples):
+        end = start + window_samples
+
+        if use_hypno:
+            midpoint_sec = (start + window_samples / 2) / fs
+            mid_idx = int(midpoint_sec / hypnogram_resolution_sec)
+            if mid_idx >= len(hypnogram):
+                break
+            if hypnogram[mid_idx] not in included_stages:
+                continue
+
+        raw_windows.append(raw_unfiltered[start:end])
+
+    return np.array(raw_windows) if raw_windows else np.array([])
+
+
+def _generate_plots_dreams(processed_dir: Path, subject_stats: dict):
+    """Generate visualization plots for all DREAMS subjects in subject_stats."""
+    from configs.dreams_config import DATA_PARAMS
+    from configs.dreams_model_config import SIGNAL_VISUALIZATION_PARAMS
+    from data_loaders import dreams_loader
+    from signal_processing import bandpassfilter
+    import paths
+
+    plots_dir = PLOTS_DIR
+    plots_dir.mkdir(parents=True, exist_ok=True)
+
+    n_viz_examples = SIGNAL_VISUALIZATION_PARAMS.get("input_examples", 0)
+    if not n_viz_examples or n_viz_examples <= 0:
+        log.warning("SIGNAL_VISUALIZATION_PARAMS['input_examples'] is 0 or unset — nothing to plot.")
+        return
+
+    channel_names = SIGNAL_VISUALIZATION_PARAMS.get(
+        "channel_names", ["EEG", "Sigma", "Hilbert Envelope"]
+    )
+
+    # Re-discover the raw data files (loader uses configured subject list)
+    patient_list = dreams_loader.find_dreams_data_files(paths.RAW_DREAMS_DATA_DIR)
+    patient_by_id = {p["id"]: p for p in patient_list}
+
+    # Map subject_stats subjects to discovered patient groups
+    stats_ids = {s["id"] for s in subject_stats["subjects"]}
+
+    for sid in sorted(stats_ids):
+        patient_group = patient_by_id.get(sid)
+        if patient_group is None:
+            log.warning(f"Subject {sid} in subject_stats.json but no raw files found — skipping.")
+            continue
+
+        log.info(f"Generating plots for: {sid}")
+
+        # Load raw data + filter (same pipeline as build_dreams_dataset.py)
+        raw = dreams_loader.load_dreams_patient_data(patient_group)
+        if raw is None:
+            log.warning(f"  Failed to load {sid} — skipping.")
+            continue
+
+        fs = raw.info["sfreq"]
+        raw_unfiltered = raw.get_data()[0].copy()
+
+        filtered = bandpassfilter.apply_bandpass_filter(
+            raw.get_data()[0], fs,
+            DATA_PARAMS["lowcut"], DATA_PARAMS["highcut"], DATA_PARAMS["filter_order"]
+        )
+
+        # EEG trace plot (uses raw scorer events)
+        from build_dreams_dataset import get_scorer_annotations as get_dreams_scorers
+        try:
+            s1_evs, s2_evs = get_dreams_scorers(patient_group, fs)
+            plot_eeg_trace(filtered, fs, s1_evs, s2_evs, sid, plots_dir)
+            log.info(f"  Saved EEG trace plot: {sid}_trace.png")
+        except Exception as e:
+            log.warning(f"  EEG trace plotting failed for {sid}: {e}")
+
+        # Model input examples: load X and Y from disk; reconstruct raw_windows
+        x_path = processed_dir / f"{sid}_X_1D.npy"
+        y_path = processed_dir / f"{sid}_Y_1D.npy"
+        if not x_path.exists() or not y_path.exists():
+            log.warning(f"  Missing .npy files for {sid} — skipping input examples.")
+            continue
+
+        x_data = np.load(x_path)
+        y_data = np.load(y_path)
+
+        hypnogram = dreams_loader.load_dreams_hypnogram(patient_group)
+        raw_windows = _segment_raw_for_visualization(
+            filtered_signal=filtered,
+            raw_unfiltered=raw_unfiltered,
+            hypnogram=hypnogram,
+            window_sec=DATA_PARAMS["window_sec"],
+            overlap_sec=DATA_PARAMS["overlap_sec"],
+            included_stages=DATA_PARAMS["included_stages"],
+            hypnogram_resolution_sec=DATA_PARAMS["hypnogram_resolution_sec"],
+            fs=fs,
+        )
+
+        if len(raw_windows) != len(x_data):
+            log.warning(
+                f"  raw_windows count ({len(raw_windows)}) does not match X_1D count "
+                f"({len(x_data)}) for {sid}. Skipping input examples — rebuild dataset "
+                "or check that config matches."
+            )
+            continue
+
+        try:
+            save_model_input_examples(
+                x_data=x_data,
+                y_data=y_data,
+                raw_windows=raw_windows,
+                subject_id=sid,
+                save_dir=plots_dir,
+                fs=fs,
+                n_examples=n_viz_examples,
+                channel_names=channel_names,
+            )
+        except Exception as e:
+            log.warning(f"  Could not save input examples for {sid}: {e}")
+
+
+def _generate_plots_mass(processed_dir: Path, subject_stats: dict):
+    """Generate visualization plots for all MASS subjects in subject_stats."""
+    from configs.mass_config import DATA_PARAMS
+    from configs.mass_model_config import SIGNAL_VISUALIZATION_PARAMS
+    from data_loaders import mass_loader
+    from signal_processing import bandpassfilter
+    import paths
+
+    plots_dir = processed_dir / "plots"
+    plots_dir.mkdir(parents=True, exist_ok=True)
+
+    n_viz_examples = SIGNAL_VISUALIZATION_PARAMS.get("input_examples", 0)
+    if not n_viz_examples or n_viz_examples <= 0:
+        log.warning("SIGNAL_VISUALIZATION_PARAMS['input_examples'] is 0 or unset — nothing to plot.")
+        return
+
+    channel_names = SIGNAL_VISUALIZATION_PARAMS.get(
+        "channel_names", ["EEG", "Sigma", "Hilbert Envelope"]
+    )
+
+    patient_list = mass_loader.find_mass_data_files(paths.RAW_MASS_DATA_DIR)
+    patient_by_id = {p["id"]: p for p in patient_list}
+
+    stats_ids = {s["id"] for s in subject_stats["subjects"]}
+
+    for sid in sorted(stats_ids):
+        patient_group = patient_by_id.get(sid)
+        if patient_group is None:
+            log.warning(f"Subject {sid} in subject_stats.json but no raw files found — skipping.")
+            continue
+
+        log.info(f"Generating plots for: {sid}")
+
+        raw = mass_loader.load_mass_patient_data(patient_group)
+        if raw is None:
+            log.warning(f"  Failed to load {sid} — skipping.")
+            continue
+
+        fs = raw.info["sfreq"]
+        raw_unfiltered = raw.get_data()[0].copy()
+
+        filtered = bandpassfilter.apply_bandpass_filter(
+            raw.get_data()[0], fs,
+            DATA_PARAMS["lowcut"], DATA_PARAMS["highcut"], DATA_PARAMS["filter_order"]
+        )
+
+        # EEG trace plot
+        from build_mass_dataset import get_scorer_annotations as get_mass_scorers
+        try:
+            s1_evs, s2_evs = get_mass_scorers(patient_group, fs)
+            plot_eeg_trace(filtered, fs, s1_evs, s2_evs, sid, plots_dir)
+            log.info(f"  Saved EEG trace plot: {sid}_trace.png")
+        except Exception as e:
+            log.warning(f"  EEG trace plotting failed for {sid}: {e}")
+
+        # Model input examples: load X and UNION Y from disk; reconstruct raw_windows
+        x_path = processed_dir / f"{sid}_X_1D.npy"
+        y_path = processed_dir / f"{sid}_Y_UNION.npy"
+        if not x_path.exists() or not y_path.exists():
+            log.warning(f"  Missing .npy files for {sid} — skipping input examples.")
+            continue
+
+        x_data = np.load(x_path)
+        y_data = np.load(y_path)
+
+        hypnogram = mass_loader.load_mass_hypnogram(patient_group)
+        raw_windows = _segment_raw_for_visualization(
+            filtered_signal=filtered,
+            raw_unfiltered=raw_unfiltered,
+            hypnogram=hypnogram,
+            window_sec=DATA_PARAMS["window_sec"],
+            overlap_sec=DATA_PARAMS["overlap_sec"],
+            included_stages=DATA_PARAMS["included_stages"],
+            hypnogram_resolution_sec=DATA_PARAMS["hypnogram_resolution_sec"],
+            fs=fs,
+        )
+
+        if len(raw_windows) != len(x_data):
+            log.warning(
+                f"  raw_windows count ({len(raw_windows)}) does not match X_1D count "
+                f"({len(x_data)}) for {sid}. Skipping input examples — rebuild dataset "
+                "or check that config matches."
+            )
+            continue
+
+        try:
+            save_model_input_examples(
+                x_data=x_data,
+                y_data=y_data,
+                raw_windows=raw_windows,
+                subject_id=sid,
+                save_dir=plots_dir,
+                fs=fs,
+                n_examples=n_viz_examples,
+                channel_names=channel_names,
+            )
+        except Exception as e:
+            log.warning(f"  Could not save input examples for {sid}: {e}")
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        description="Generate visualization plots for a processed dataset. "
+                    "Run AFTER build_*_dataset.py has produced subject_stats.json."
+    )
+    parser.add_argument(
+        "--dataset",
+        required=True,
+        choices=["dreams", "mass"],
+        help="Which dataset to visualize.",
+    )
+    args = parser.parse_args()
+
+    from utils.logger import setup_logging
+    setup_logging(f"visualize_{args.dataset}.log")
+
+    import paths
+    processed_dir = Path(paths.PROCESSED_DATA_DIR)
+    stats_path = processed_dir / "subject_stats.json"
+
+    if not stats_path.exists():
+        raise FileNotFoundError(
+            f"subject_stats.json not found at {stats_path}. "
+            f"Run build_{args.dataset}_dataset.py first to generate the processed dataset."
+        )
+
+    with open(stats_path) as f:
+        subject_stats = json.load(f)
+
+    expected_dataset = args.dataset.upper()
+    actual_dataset = subject_stats.get("dataset", "").upper()
+    if actual_dataset != expected_dataset:
+        raise ValueError(
+            f"subject_stats.json reports dataset='{actual_dataset}' "
+            f"but --dataset={args.dataset} was requested. "
+            f"Rebuild the dataset or pass the correct --dataset flag."
+        )
+
+    log.info(f"Generating plots for {expected_dataset} dataset")
+    log.info(f"Processed dir: {processed_dir}")
+    log.info(f"Subjects in stats: {len(subject_stats['subjects'])}")
+
+    if args.dataset == "dreams":
+        _generate_plots_dreams(processed_dir, subject_stats)
+    else:
+        _generate_plots_mass(processed_dir, subject_stats)
+
+    log.info("Plot generation complete.")
+
+
+if __name__ == "__main__":
+    main()
