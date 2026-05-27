@@ -12,7 +12,7 @@ DATA_PARAMS = {
     'lowcut': 0.3,
     'highcut': 30.0,
     'filter_order': 4,
-    'use_instance_norm': True,
+    'use_instance_norm': False,
     'included_stages': ['2'],
     'hypnogram_resolution_sec': 20.0,
     'page_duration': 20,
@@ -27,6 +27,7 @@ DATA_PARAMS = {
         '01-02-0019'
     ],
     'channels': ['EEG C3-CLE'],
+    'count_spindle_stats': False, #
 }
 
 # 2. Cross-Validation Configuration

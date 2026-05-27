@@ -15,6 +15,7 @@ DATA_PARAMS = {
         'excerpt1', 'excerpt2', 'excerpt3', 'excerpt4',
         'excerpt5', 'excerpt6'
     ],
+    'count_spindle_stats': False,
 }
 
 CV_CONFIG = {

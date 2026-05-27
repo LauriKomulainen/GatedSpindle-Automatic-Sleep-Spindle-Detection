@@ -30,6 +30,7 @@ OVERLAP_SEC = DATA_PARAMS["overlap_sec"]
 USE_INSTANCE_NORM = DATA_PARAMS["use_instance_norm"]
 INCLUDED_STAGES = DATA_PARAMS["included_stages"]
 HYPNOGRAM_RESOLUTION_SEC = DATA_PARAMS["hypnogram_resolution_sec"]
+COUNT_SPINDLE_STATS = DATA_PARAMS.get("count_spindle_stats", False)
 
 # All scorer modes to generate masks for
 SCORER_MODES = ['E1', 'E2', 'UNION']
@@ -87,38 +88,48 @@ def segment_data(raw, hypnogram: np.ndarray) -> tuple:
     per_stage_counts = {}  # mode -> {stage_code: count}
 
     for mode, annots in scorer_modes.items():
+        # Mask itself is always needed — it's how we get the per-window Y arrays.
         mask = create_spindle_mask(annots, signal_length, fs)
         spindle_masks[mode] = mask
 
-        _, n_total = label(mask > 0)
+        if COUNT_SPINDLE_STATS:
+            _, n_total = label(mask > 0)
 
-        if hypnogram is not None:
-            stage_mask = create_stage_mask(
-                hypnogram, signal_length, fs, INCLUDED_STAGES, HYPNOGRAM_RESOLUTION_SEC
-            )
-            filtered_mask = mask * stage_mask
-            _, n_kept = label(filtered_mask > 0)
+            if hypnogram is not None:
+                stage_mask = create_stage_mask(
+                    hypnogram, signal_length, fs, INCLUDED_STAGES, HYPNOGRAM_RESOLUTION_SEC
+                )
+                filtered_mask = mask * stage_mask
+                _, n_kept = label(filtered_mask > 0)
 
-            # Per-stage breakdown for this scorer.
-            per_stage_counts[mode] = count_spindles_per_stage(
-                mask, hypnogram, fs, HYPNOGRAM_RESOLUTION_SEC
-            )
+                # Per-stage breakdown for this scorer.
+                per_stage_counts[mode] = count_spindles_per_stage(
+                    mask, hypnogram, fs, HYPNOGRAM_RESOLUTION_SEC
+                )
+            else:
+                n_kept = n_total
+                per_stage_counts[mode] = {}
+
+            n_spindle_counts[mode] = (n_total, n_kept)
         else:
-            n_kept = n_total
+            # Stats disabled — record None/0 placeholders. The per-window
+            # positive count is still computed later from the actual Y masks.
+            n_spindle_counts[mode] = (None, None)
             per_stage_counts[mode] = {}
 
-        n_spindle_counts[mode] = (n_total, n_kept)
-
-    # Log spindle counts
-    stages_str = "/".join(f"N{s}" if str(s).isdigit() else str(s) for s in INCLUDED_STAGES)
-    for mode, (n_total, n_kept) in n_spindle_counts.items():
-        n_lost = n_total - n_kept
-        log.info(f"  [{mode}] Spindles: Total={n_total}, In {stages_str}={n_kept}, Lost={n_lost}")
-        if per_stage_counts.get(mode):
-            log.info(
-                f"  [{mode}] Spindles by stage: "
-                f"{format_stage_counts(per_stage_counts[mode], n_total)}"
-            )
+    # Log spindle counts (only meaningful when stats were computed)
+    if COUNT_SPINDLE_STATS:
+        stages_str = "/".join(f"N{s}" if str(s).isdigit() else str(s) for s in INCLUDED_STAGES)
+        for mode, (n_total, n_kept) in n_spindle_counts.items():
+            n_lost = n_total - n_kept
+            log.info(f"  [{mode}] Spindles: Total={n_total}, In {stages_str}={n_kept}, Lost={n_lost}")
+            if per_stage_counts.get(mode):
+                log.info(
+                    f"  [{mode}] Spindles by stage: "
+                    f"{format_stage_counts(per_stage_counts[mode], n_total)}"
+                )
+    else:
+        log.info("  Per-stage spindle stats skipped (count_spindle_stats=False).")
 
     use_hypno = hypnogram is not None
     x_windows = []
@@ -304,7 +315,7 @@ def _process_patient(patient_file_group: dict, processed_dir: Path) -> dict | No
         np.save(processed_dir / y_filename, y_masks)
         log.info(f"  Saved: {y_filename}")
 
-        n_total, n_kept = n_spindle_counts.get(mode, (0, 0))
+        n_total, n_kept = n_spindle_counts.get(mode, (None, None))
         n_pos_windows = pos_window_counts.get(mode, 0)
         n_total_windows = len(x_windows)
         pos_ratio = n_pos_windows / n_total_windows if n_total_windows > 0 else 0.0
@@ -318,10 +329,16 @@ def _process_patient(patient_file_group: dict, processed_dir: Path) -> dict | No
             "per_stage": per_stage_counts.get(mode, {}),
         }
 
-        log.info(
-            f"  [{mode}] Windows: {n_pos_windows}/{n_total_windows} positive "
-            f"({pos_ratio:.1%}), spindles kept: {n_kept}"
-        )
+        if n_kept is not None:
+            log.info(
+                f"  [{mode}] Windows: {n_pos_windows}/{n_total_windows} positive "
+                f"({pos_ratio:.1%}), spindles kept: {n_kept}"
+            )
+        else:
+            log.info(
+                f"  [{mode}] Windows: {n_pos_windows}/{n_total_windows} positive "
+                f"({pos_ratio:.1%})"
+            )
 
     # FULL data for inference (no stage filtering at window level;
     # stage_mask is applied to events after prediction)
@@ -399,6 +416,7 @@ def main():
 
             # Aggregate per-stage spindle counts across all subjects for this scorer.
             # Quantifies how many spindles each candidate stage filter would
+            # retain or drop on the dataset (e.g. moving from N2+N3 to N2 only).
             agg_per_stage: dict = {}
             for s in stats:
                 for stage, n in s["scorers"].get(mode, {}).get("per_stage", {}).items():

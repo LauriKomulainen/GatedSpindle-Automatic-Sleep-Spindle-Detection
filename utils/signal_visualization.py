@@ -26,7 +26,6 @@ from pathlib import Path
 import argparse
 import json
 import logging
-import sys
 from paths import PLOTS_DIR
 import numpy as np
 import matplotlib.pyplot as plt
@@ -38,7 +37,7 @@ log = logging.getLogger(__name__)
 
 # Consistent color scheme
 COLORS_CHANNELS = ['#2c3e50', '#2980b9', '#8e44ad']
-COLOR_RAW = '#7f8c8d'
+COLOR_RAW = '#2c3e50'
 COLOR_SPINDLE = '#e74c3c'
 
 
@@ -69,7 +68,7 @@ def _select_example_indices(has_spindle_indices: np.ndarray, n_examples: int) ->
     return chosen
 
 
-def save_model_input_examples(x_data, y_data, raw_windows, subject_id, save_dir,
+def save_model_input_examples(x_data, y_data, raw_windows, subject_id,
                               n_examples=10, fs=256, channel_names=None):
     """
     Save example plots showing model input channels with spindle annotations.
@@ -77,10 +76,7 @@ def save_model_input_examples(x_data, y_data, raw_windows, subject_id, save_dir,
     if not n_examples or n_examples <= 0:
         return
 
-    if channel_names is None:
-        channel_names = ['EEG', 'Sigma', 'Hilbert Envelope']
-
-    subject_dir = Path(save_dir) / "Model_input_examples" / subject_id
+    subject_dir = PLOTS_DIR / "Model_input_examples" / subject_id
     subject_dir.mkdir(parents=True, exist_ok=True)
 
     has_spindle_indices = np.where(np.any(y_data > 0, axis=1))[0]
@@ -89,6 +85,12 @@ def save_model_input_examples(x_data, y_data, raw_windows, subject_id, save_dir,
         return
 
     chosen_indices = _select_example_indices(has_spindle_indices, n_examples)
+    if len(chosen_indices) < n_examples:
+        log.info(
+            f"  {subject_id}: requested {n_examples} examples, "
+            f"only {len(has_spindle_indices)} windows contain spindles — "
+            f"saving {len(chosen_indices)}."
+        )
     window_sec = x_data.shape[1] / fs
     t_axis = np.linspace(0, window_sec, x_data.shape[1])
 
@@ -103,7 +105,6 @@ def save_model_input_examples(x_data, y_data, raw_windows, subject_id, save_dir,
         fig, axs = plt.subplots(
             n_channels + 1, 1,
             figsize=(10, 2.5 * (n_channels + 1)),
-            sharex=True
         )
 
         # Row 0: Raw unfiltered signal (reference)
@@ -113,7 +114,8 @@ def save_model_input_examples(x_data, y_data, raw_windows, subject_id, save_dir,
             where=(mask > 0),
             color=COLOR_SPINDLE, alpha=0.25
         )
-        axs[0].set_ylabel("Raw EEG (µV)")
+        axs[0].set_ylabel("Amplitude (µV)")
+        axs[0].set_xlabel("Time (s)")
         axs[0].grid(True, alpha=0.3)
 
         # Rows 1..n: Model input channels
@@ -121,7 +123,6 @@ def save_model_input_examples(x_data, y_data, raw_windows, subject_id, save_dir,
             ax = axs[ch_idx + 1]
             signal = channels[ch_idx]
             color = COLORS_CHANNELS[ch_idx % len(COLORS_CHANNELS)]
-            ch_label = channel_names[ch_idx] if ch_idx < len(channel_names) else f"CH {ch_idx + 1}"
 
             ax.plot(t_axis, signal, color=color, linewidth=1)
             ax.fill_between(
@@ -129,10 +130,10 @@ def save_model_input_examples(x_data, y_data, raw_windows, subject_id, save_dir,
                 where=(mask > 0),
                 color=COLOR_SPINDLE, alpha=0.25, label='Spindle'
             )
-            ax.set_ylabel(ch_label)
+            ax.set_ylabel("Amplitude")
+            ax.set_xlabel("Time (s)")
             ax.grid(True, alpha=0.3)
 
-        axs[-1].set_xlabel("Time (s)")
         plt.tight_layout()
 
         save_path = subject_dir / f"excerpt_{i + 1}_win_{idx}.png"
@@ -142,7 +143,7 @@ def save_model_input_examples(x_data, y_data, raw_windows, subject_id, save_dir,
     log.info(f"Saved {len(chosen_indices)} input examples to {subject_dir}")
 
 
-def plot_eeg_trace(signal, sfreq, s1_evs, s2_evs, subject_id, save_dir):
+def plot_eeg_trace(signal, sfreq, s1_evs, s2_evs, subject_id):
     """
     Plot a 5-second EEG segment with expert scorer annotations.
     Tries to find an interesting region where scorers partially overlap.
@@ -182,7 +183,7 @@ def plot_eeg_trace(signal, sfreq, s1_evs, s2_evs, subject_id, save_dir):
     plt.ylim(min(data_min, -20) - 10, max(data_max, 10) + 10)
     plt.legend(loc='upper right', fontsize='small', framealpha=0.9)
     plt.tight_layout()
-    plt.savefig(Path(save_dir) / f"{subject_id}_trace.png", dpi=150)
+    plt.savefig(PLOTS_DIR / f"{subject_id}_trace.png", dpi=150)
     plt.close()
 
 
@@ -242,14 +243,6 @@ def _plot_union_shading(s1_evs, s2_evs, start_time, end_time, t_axis, sfreq):
         label_added = True
 
 
-# =============================================================================
-# STANDALONE SCRIPT MODE
-# =============================================================================
-# When run via `python -m utils.signal_visualization`, the module reads
-# subject_stats.json from PROCESSED_DATA_DIR and generates plots for each
-# subject listed there. This decouples plot generation from dataset building.
-
-
 def _segment_raw_for_visualization(
     filtered_signal: np.ndarray,
     raw_unfiltered: np.ndarray,
@@ -301,9 +294,6 @@ def _generate_plots_dreams(processed_dir: Path, subject_stats: dict):
     from signal_processing import bandpassfilter
     import paths
 
-    plots_dir = PLOTS_DIR
-    plots_dir.mkdir(parents=True, exist_ok=True)
-
     n_viz_examples = SIGNAL_VISUALIZATION_PARAMS.get("input_examples", 0)
     if not n_viz_examples or n_viz_examples <= 0:
         log.warning("SIGNAL_VISUALIZATION_PARAMS['input_examples'] is 0 or unset — nothing to plot.")
@@ -346,7 +336,7 @@ def _generate_plots_dreams(processed_dir: Path, subject_stats: dict):
         from build_dreams_dataset import get_scorer_annotations as get_dreams_scorers
         try:
             s1_evs, s2_evs = get_dreams_scorers(patient_group, fs)
-            plot_eeg_trace(filtered, fs, s1_evs, s2_evs, sid, plots_dir)
+            plot_eeg_trace(filtered, fs, s1_evs, s2_evs, sid)
             log.info(f"  Saved EEG trace plot: {sid}_trace.png")
         except Exception as e:
             log.warning(f"  EEG trace plotting failed for {sid}: {e}")
@@ -387,7 +377,6 @@ def _generate_plots_dreams(processed_dir: Path, subject_stats: dict):
                 y_data=y_data,
                 raw_windows=raw_windows,
                 subject_id=sid,
-                save_dir=plots_dir,
                 fs=fs,
                 n_examples=n_viz_examples,
                 channel_names=channel_names,
@@ -403,9 +392,6 @@ def _generate_plots_mass(processed_dir: Path, subject_stats: dict):
     from data_loaders import mass_loader
     from signal_processing import bandpassfilter
     import paths
-
-    plots_dir = processed_dir / "plots"
-    plots_dir.mkdir(parents=True, exist_ok=True)
 
     n_viz_examples = SIGNAL_VISUALIZATION_PARAMS.get("input_examples", 0)
     if not n_viz_examples or n_viz_examples <= 0:
@@ -446,7 +432,7 @@ def _generate_plots_mass(processed_dir: Path, subject_stats: dict):
         from build_mass_dataset import get_scorer_annotations as get_mass_scorers
         try:
             s1_evs, s2_evs = get_mass_scorers(patient_group, fs)
-            plot_eeg_trace(filtered, fs, s1_evs, s2_evs, sid, plots_dir)
+            plot_eeg_trace(filtered, fs, s1_evs, s2_evs, sid)
             log.info(f"  Saved EEG trace plot: {sid}_trace.png")
         except Exception as e:
             log.warning(f"  EEG trace plotting failed for {sid}: {e}")
@@ -487,7 +473,6 @@ def _generate_plots_mass(processed_dir: Path, subject_stats: dict):
                 y_data=y_data,
                 raw_windows=raw_windows,
                 subject_id=sid,
-                save_dir=plots_dir,
                 fs=fs,
                 n_examples=n_viz_examples,
                 channel_names=channel_names,
