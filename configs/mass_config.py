@@ -12,7 +12,7 @@ DATA_PARAMS = {
     'lowcut': 0.3,
     'highcut': 30.0,
     'filter_order': 4,
-    'use_instance_norm': False,
+    'use_instance_norm': True,
     'included_stages': ['2'],
     'hypnogram_resolution_sec': 20.0,
     'page_duration': 20,
